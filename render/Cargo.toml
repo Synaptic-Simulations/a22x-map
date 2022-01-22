@@ -1,0 +1,9 @@
+[package]
+name = "render"
+authors = ["Synaptic Simulations"]
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+glam = "0.20"
+wgpu = "0.12"
