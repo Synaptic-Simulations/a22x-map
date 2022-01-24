@@ -5,4 +5,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+tiff = { git = "https://github.com/image-rs/image-tiff" }
+
 geo = { path = "../geo" }
