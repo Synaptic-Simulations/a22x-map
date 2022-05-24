@@ -60,23 +60,4 @@ impl GeoTiff {
 		let yh = lerp(xlyh, xhyh, x_delta);
 		lerp(yl, yh, y_delta)
 	}
-
-	/// Downsample the GeoTIFF file to a 512x512 grid with altitudes in 100 meter intervals,
-	/// with 0 being an altitude of -500 meter MSL.
-	///
-	/// To map the values back, use `(value - 5) * 100`.
-	pub fn downsample(self) -> Vec<i16> {
-		let mut result = Vec::with_capacity(512 * 512);
-
-		for x in 0..512 {
-			for y in 0..512 {
-				let x = x as f32 / 512.0;
-				let y = y as f32 / 512.0;
-
-				result.push(self.sample(x, y).round() as _);
-			}
-		}
-
-		result
-	}
 }
