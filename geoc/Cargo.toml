@@ -5,6 +5,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+clap = { version = "3.1.18", features = ["derive"] }
+rayon = "1.5.3"
 tiff = { git = "https://github.com/image-rs/image-tiff" }
 
 geo = { path = "../geo" }

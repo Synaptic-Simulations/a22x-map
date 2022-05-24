@@ -7,7 +7,7 @@ use tiff::{
 
 /// A GeoTIFF file.
 pub struct GeoTiff {
-	pub data: Vec<i16>,
+	data: Vec<i16>,
 	width: u32,
 	height: u32,
 }

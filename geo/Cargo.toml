@@ -6,3 +6,4 @@ edition = "2021"
 
 [dependencies]
 bitpacking = "0.8"
+lz4 = "1.23.3"
