@@ -1,3 +1,212 @@
-fn main() {
+use std::time::Instant;
 
+use egui::FontDefinitions;
+use egui_wgpu_backend::ScreenDescriptor;
+use egui_winit_platform::{Platform, PlatformDescriptor};
+use futures_lite::future::block_on;
+use tracing_subscriber::prelude::*;
+use tracy::{tracing::TracyLayer, wgpu::ProfileContext};
+use wgpu::{
+	Backends,
+	Color,
+	CommandEncoderDescriptor,
+	DeviceDescriptor,
+	Features,
+	Instance,
+	Limits,
+	LoadOp,
+	Maintain,
+	Operations,
+	PowerPreference,
+	PresentMode,
+	RenderPassColorAttachment,
+	RenderPassDescriptor,
+	RequestAdapterOptions,
+	SurfaceConfiguration,
+	TextureUsages,
+};
+use winit::{
+	dpi::PhysicalSize,
+	event::{Event, WindowEvent},
+	event_loop::{ControlFlow, EventLoop},
+	window::WindowBuilder,
+};
+
+use crate::ui::Ui;
+
+mod ui;
+
+fn main() {
+	env_logger::init();
+	let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry().with(TracyLayer)).unwrap();
+
+	let event_loop = EventLoop::new();
+	let window = WindowBuilder::new()
+		.with_title("map-render")
+		.with_visible(false)
+		.with_inner_size(PhysicalSize {
+			width: 1040,
+			height: 1040,
+		})
+		.with_resizable(false)
+		.build(&event_loop)
+		.unwrap();
+
+	let instance = Instance::new(Backends::all());
+	let surface = unsafe { instance.create_surface(&window) };
+	let adapter = block_on(instance.request_adapter(&RequestAdapterOptions {
+		power_preference: PowerPreference::default(),
+		compatible_surface: Some(&surface),
+		force_fallback_adapter: false,
+	}))
+	.unwrap();
+
+	let (device, queue) = block_on(adapter.request_device(
+		&DeviceDescriptor {
+			label: Some("device"),
+			features: Features::TIMESTAMP_QUERY
+				| Features::SPIRV_SHADER_PASSTHROUGH
+				| Features::BUFFER_BINDING_ARRAY
+				| Features::STORAGE_RESOURCE_BINDING_ARRAY
+				| Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
+				| Features::PARTIALLY_BOUND_BINDING_ARRAY
+				| Features::UNSIZED_BINDING_ARRAY,
+			limits: Limits {
+				max_storage_buffers_per_shader_stage: 360 * 180 + 1,
+				..Default::default()
+			},
+		},
+		None,
+	))
+	.unwrap();
+
+	let mut profiler = ProfileContext::with_name("GPU", &adapter, &device, &queue, 2);
+	let mut ui = Ui::new();
+
+	let size = window.inner_size();
+	let mut config = SurfaceConfiguration {
+		usage: TextureUsages::RENDER_ATTACHMENT,
+		format: surface.get_preferred_format(&adapter).unwrap(),
+		width: size.width,
+		height: size.height,
+		present_mode: PresentMode::Fifo,
+	};
+	surface.configure(&device, &config);
+
+	let mut platform = Platform::new(PlatformDescriptor {
+		physical_width: size.width,
+		physical_height: size.height,
+		scale_factor: window.scale_factor(),
+		font_definitions: FontDefinitions::default(),
+		style: Default::default(),
+	});
+	let mut egui_pass = egui_wgpu_backend::RenderPass::new(&device, config.format, 1);
+
+	window.set_visible(true);
+	let start_time = Instant::now();
+	event_loop.run(move |event, _, control_flow| {
+		platform.handle_event(&event);
+		match event {
+			Event::MainEventsCleared => window.request_redraw(),
+			Event::RedrawRequested(_) => {
+				let (texture, view) = {
+					tracy::zone!("Acquire Image");
+
+					let texture = match surface.get_current_texture() {
+						Ok(tex) => tex,
+						Err(_) => return,
+					};
+					let view = texture.texture.create_view(&Default::default());
+
+					(texture, view)
+				};
+
+				let mut encoder =
+					tracy::wgpu_command_encoder!(device, profiler, CommandEncoderDescriptor { label: Some("Exec") });
+
+				platform.update_time(start_time.elapsed().as_secs_f64());
+				platform.begin_frame();
+
+				let context = platform.context();
+				{
+					let mut pass = tracy::wgpu_render_pass!(
+						encoder,
+						RenderPassDescriptor {
+							label: Some("Map Render"),
+							color_attachments: &[RenderPassColorAttachment {
+								view: &view,
+								resolve_target: None,
+								ops: Operations {
+									load: LoadOp::Clear(Color::BLACK),
+									store: true,
+								}
+							}],
+							depth_stencil_attachment: None,
+						}
+					);
+					ui.update(&context, &mut pass, &device, &queue, config.format);
+				}
+
+				let (screen_descriptor, tesselated) = {
+					tracy::zone!("UI Generation");
+
+					let output = platform.end_frame(Some(&window));
+					let screen_descriptor = ScreenDescriptor {
+						physical_height: config.height,
+						physical_width: config.width,
+						scale_factor: window.scale_factor() as _,
+					};
+					let tesselated = context.tessellate(output.shapes);
+					egui_pass.update_buffers(&device, &queue, &tesselated, &screen_descriptor);
+					egui_pass.add_textures(&device, &queue, &output.textures_delta).unwrap();
+					egui_pass.remove_textures(output.textures_delta).unwrap();
+
+					(screen_descriptor, tesselated)
+				};
+
+				{
+					tracy::zone!("UI Render");
+
+					let mut render_pass = tracy::wgpu_render_pass!(
+						encoder,
+						RenderPassDescriptor {
+							label: Some("UI"),
+							color_attachments: &[RenderPassColorAttachment {
+								view: &view,
+								resolve_target: None,
+								ops: Operations {
+									load: LoadOp::Load,
+									store: true,
+								},
+							}],
+							depth_stencil_attachment: None,
+						}
+					);
+					egui_pass
+						.execute_with_renderpass(&mut render_pass, &tesselated, &screen_descriptor)
+						.unwrap();
+				}
+
+				tracy::zone!("Submit");
+				queue.submit([encoder.finish()]);
+
+				device.poll(Maintain::Wait);
+				profiler.end_frame(&device, &queue);
+				texture.present();
+				tracy::frame!();
+			},
+			Event::WindowEvent { ref event, .. } => match event {
+				WindowEvent::Resized(size) => {
+					if size.width > 0 && size.height > 0 {
+						config.width = size.width;
+						config.height = size.height;
+						surface.configure(&device, &config);
+					}
+				},
+				WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+				_ => {},
+			},
+			_ => {},
+		}
+	});
 }

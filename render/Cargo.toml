@@ -4,4 +4,12 @@ authors = ["Synaptic Simulations"]
 version = "0.1.0"
 edition = "2021"
 
+[build-dependencies]
+hassle-rs = "0.9.0"
+walkdir = "2.3.2"
+
 [dependencies]
+geo = { path = "../geo" }
+
+log = "0.4.17"
+wgpu = "0.12.0"

@@ -36,7 +36,8 @@ pub fn upgrade(upgrade: Upgrade) {
 	for_each_file(&upgrade.input, |entry| {
 		let path = entry.path();
 
-		let (tile, lat, lon) = GeoTile::load(&metadata, &path)?;
+		let tile = GeoTile::load(&metadata, &path)?;
+		let (lat, lon) = GeoTile::get_coordinates_from_file_name(&path);
 		tile.write_to_directory(&upgrade.output, lat, lon)?;
 
 		Ok(())

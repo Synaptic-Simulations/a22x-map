@@ -6,7 +6,7 @@ use std::{
 	fmt::{Debug, Display},
 	fs::File,
 	io::{Read, Write},
-	path::Path,
+	path::{Path, PathBuf},
 };
 
 use bitpacking::{BitPacker, BitPacker8x};
@@ -114,13 +114,37 @@ impl From<std::io::Error> for LoadError {
 	fn from(x: std::io::Error) -> Self { Self::Io(x) }
 }
 
+#[derive(Clone)]
 pub struct GeoTile {
-	min_height: u16,
-	bits: u8,
 	data: Vec<u8>,
 }
 
 impl GeoTile {
+	pub fn get_file_name_for_coordinates(buf: &mut PathBuf, lat: i16, lon: i16) {
+		buf.push(format!(
+			"{}{}{}{}.geo",
+			if lat < 0 { 'S' } else { 'N' },
+			lat.abs(),
+			if lon < 0 { 'W' } else { 'E' },
+			lon.abs()
+		));
+	}
+
+	pub fn get_coordinates_from_file_name(path: &Path) -> (i16, i16) {
+		let file_name = path.file_name().unwrap().to_str().unwrap();
+		let e_or_w_location = file_name.find(['E', 'W']).unwrap();
+		let mut lat: i16 = file_name[1..e_or_w_location].parse().unwrap();
+		if &file_name[0..1] == "S" {
+			lat = -lat;
+		}
+		let mut lon: i16 = file_name[e_or_w_location + 1..file_name.len() - 4].parse().unwrap();
+		if &file_name[e_or_w_location..e_or_w_location + 1] == "W" {
+			lon = -lon;
+		}
+
+		(lat, lon)
+	}
+
 	/// Compress a terrain tile from raw data.
 	///
 	/// `data` must have length `metadata.resolution^2`.
@@ -158,9 +182,12 @@ impl GeoTile {
 
 		Ok(if max == min {
 			Self {
-				min_height: min,
-				bits: 0,
-				data: vec![],
+				data: {
+					let mut vec = vec![0; 3];
+					vec[0..2].copy_from_slice(&min.to_le_bytes());
+					vec[2] = 0;
+					vec
+				},
 			}
 		} else {
 			// The max number of bits used to encode the deltas of each height from the minimum.
@@ -169,57 +196,49 @@ impl GeoTile {
 			let block_size = BitPacker8x::compressed_block_size(bits);
 			let block_count = (metadata.resolution as usize * metadata.resolution as usize) / BitPacker8x::BLOCK_LEN;
 
-			let mut out = vec![0; block_count * block_size];
+			let mut out = vec![0; 3 + block_count * block_size];
+			out[0..2].copy_from_slice(&min.to_le_bytes());
+			out[2] = bits;
 
 			let packer = BitPacker8x::new();
 			for (i, chunk) in data.chunks(BitPacker8x::BLOCK_LEN).enumerate() {
 				packer.compress(chunk, &mut out[block_size * i..], bits);
 			}
 
-			Self {
-				min_height: min,
-				bits,
-				data: out,
-			}
+			Self { data: out }
 		})
 	}
 
-	pub fn load(metadata: &TileMetadata, path: &Path) -> Result<(Self, i16, i16), LoadError> {
-		let file_name = path.file_name().unwrap().to_str().unwrap();
-		let e_or_w_location = file_name.find(['E', 'W']).unwrap();
-		let mut lat: i16 = file_name[1..e_or_w_location].parse().unwrap();
-		if &file_name[0..1] == "S" {
-			lat = -lat;
-		}
-		let mut lon: i16 = file_name[e_or_w_location + 1..file_name.len() - 4].parse().unwrap();
-		if &file_name[e_or_w_location..e_or_w_location + 1] == "W" {
-			lon = -lon;
-		}
-
+	pub fn load(metadata: &TileMetadata, path: &Path) -> Result<Self, LoadError> {
 		match metadata.version {
-			1 => Ok((load::load_v1(metadata, path)?, lat, lon)),
-			2 => Ok((load::load_v2(metadata, path)?, lat, lon)),
+			1 => load::load_v1(path),
+			2 => load::load_v2(path),
 			_ => Err(LoadError::UnknownFormatVersion),
 		}
 	}
 
+	pub fn chunk(&self) -> &[u8] { &self.data }
+
 	pub fn expand(&self, metadata: &TileMetadata) -> Vec<i16> {
-		if self.bits == 0 {
-			let positive_height = self.min_height * metadata.height_resolution;
+		let min_height = u16::from_le_bytes(self.data[0..2].try_into().unwrap());
+		let bits = self.data[2];
+
+		if bits == 0 {
+			let positive_height = min_height * metadata.height_resolution;
 			let height = positive_height as i16 - 500; // Lowest altitude is -414m.
 			vec![height; metadata.resolution as usize * metadata.resolution as usize]
 		} else {
 			let mut out = vec![0; metadata.resolution as usize * metadata.resolution as usize];
-			let block_size = BitPacker8x::compressed_block_size(self.bits);
+			let block_size = BitPacker8x::compressed_block_size(bits);
 			let packer = BitPacker8x::new();
 			for (i, chunk) in out.chunks_exact_mut(BitPacker8x::BLOCK_LEN).enumerate() {
-				let compressed = &self.data[block_size * i..];
-				packer.decompress(compressed, chunk, self.bits);
+				let compressed = &self.data[3 + block_size * i..];
+				packer.decompress(compressed, chunk, bits);
 			}
 
 			out.into_iter()
 				.map(|height| {
-					let positive_height = (height as u16 + self.min_height) * metadata.height_resolution;
+					let positive_height = (height as u16 + min_height) * metadata.height_resolution;
 					positive_height as i16 - 500 // Lowest altitude is -414m.
 				})
 				.collect()
@@ -228,17 +247,9 @@ impl GeoTile {
 
 	pub fn write_to_directory(&self, dir: &Path, latitude: i16, longitude: i16) -> Result<(), std::io::Error> {
 		let mut path = dir.to_path_buf();
-		path.push(format!(
-			"{}{}{}{}.geo",
-			if latitude < 0 { 'S' } else { 'N' },
-			latitude.abs(),
-			if longitude < 0 { 'W' } else { 'E' },
-			longitude.abs()
-		));
+		Self::get_file_name_for_coordinates(&mut path, latitude, longitude);
 
 		let mut file = EncoderBuilder::new().level(9).build(File::create(path)?)?;
-		file.write_all(&self.min_height.to_le_bytes())?;
-		file.write_all(&self.bits.to_le_bytes())?;
 		file.write_all(&self.data)?;
 		file.finish().1
 	}
