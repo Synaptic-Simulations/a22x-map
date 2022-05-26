@@ -1467,6 +1467,20 @@ name = "profiling"
 version = "1.0.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9145ac0af1d93c638c98c40cf7d25665f427b2a44ad0a99b1dccf3e2f25bb987"
+dependencies = [
+ "profiling-procmacros",
+ "tracing",
+]
+
+[[package]]
+name = "profiling-procmacros"
+version = "1.0.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "151b4774158c69aae073abb06d0cf879c4657966e6f2d7535d9b0e94e85500af"
+dependencies = [
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "quick-xml"
@@ -1572,6 +1586,7 @@ dependencies = [
  "env_logger",
  "futures-lite 1.12.0",
  "log",
+ "profiling",
  "render",
  "rfd",
  "tracing",
@@ -1884,9 +1899,9 @@ dependencies = [
 
 [[package]]
 name = "tracy_full"
-version = "1.0.1"
+version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e4d616f4ade20efd8dce8382160492d2bd6aca706a6dfb4016904fa5de926169"
+checksum = "6cfe1612473cd0e13a203d5d86bb2c878f2f9e7e7db5d02bda9d7f900740edd8"
 dependencies = [
  "ctor",
  "futures-lite 0.1.11",

@@ -13,7 +13,6 @@ use wgpu::{
 	DeviceDescriptor,
 	Features,
 	Instance,
-	Limits,
 	LoadOp,
 	Maintain,
 	Operations,
@@ -45,7 +44,7 @@ fn main() {
 		.with_title("map-render")
 		.with_visible(false)
 		.with_inner_size(PhysicalSize {
-			width: 1040,
+			width: 1480,
 			height: 1040,
 		})
 		.with_resizable(false)
@@ -64,17 +63,8 @@ fn main() {
 	let (device, queue) = block_on(adapter.request_device(
 		&DeviceDescriptor {
 			label: Some("device"),
-			features: Features::TIMESTAMP_QUERY
-				| Features::SPIRV_SHADER_PASSTHROUGH
-				| Features::BUFFER_BINDING_ARRAY
-				| Features::STORAGE_RESOURCE_BINDING_ARRAY
-				| Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING
-				| Features::PARTIALLY_BOUND_BINDING_ARRAY
-				| Features::UNSIZED_BINDING_ARRAY,
-			limits: Limits {
-				max_storage_buffers_per_shader_stage: 360 * 180 + 1,
-				..Default::default()
-			},
+			features: Features::TIMESTAMP_QUERY | Features::SPIRV_SHADER_PASSTHROUGH,
+			limits: Default::default(),
 		},
 		None,
 	))
@@ -190,9 +180,15 @@ fn main() {
 				tracy::zone!("Submit");
 				queue.submit([encoder.finish()]);
 
-				device.poll(Maintain::Wait);
 				profiler.end_frame(&device, &queue);
 				texture.present();
+
+				{
+					tracy::zone!("GPU Sync");
+					device.poll(Maintain::Wait);
+					block_on(queue.on_submitted_work_done());
+				}
+
 				tracy::frame!();
 			},
 			Event::WindowEvent { ref event, .. } => match event {

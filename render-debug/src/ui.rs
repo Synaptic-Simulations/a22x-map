@@ -1,5 +1,9 @@
 use egui::{ComboBox, Context, DragValue, Window};
-use render::{range::Range, LatLon, Renderer};
+use render::{
+	range::{Mode, Range},
+	LatLon,
+	Renderer,
+};
 use wgpu::{Device, Queue, RenderPass, TextureFormat};
 
 pub struct Ui {
@@ -32,7 +36,15 @@ impl Ui {
 					if let Some(data) = rfd::FileDialog::new().pick_folder() {
 						if let Some(data_s) = data.to_str() {
 							self.data_path = data_s.into();
-							let renderer = match Renderer::new(device, queue, format, self.position, self.range, data) {
+							let renderer = match Renderer::new(
+								device,
+								queue,
+								format,
+								data,
+								self.position,
+								self.range,
+								Mode::FullPage,
+							) {
 								Ok(x) => x,
 								Err(e) => {
 									log::error!("{}", e);

@@ -1,5 +1,5 @@
 use std::{
-	num::{NonZeroU32, NonZeroU64},
+	num::NonZeroU64,
 	ops::{Add, Sub},
 	path::PathBuf,
 };
@@ -38,7 +38,7 @@ use wgpu::{
 };
 
 use crate::{
-	range::{range_to_radians, Range},
+	range::{Mode, Range},
 	tile_cache::TileCache,
 };
 
@@ -91,17 +91,22 @@ impl Sub for LatLon {
 }
 
 pub struct Renderer {
-	cache: TileCache,
 	pipeline: RenderPipeline,
 	group: BindGroup,
 	group_layout: BindGroupLayout,
 	cbuffer: Buffer,
+	cache: TileCache,
 }
 
 impl Renderer {
 	pub fn new(
-		device: &Device, queue: &Queue, format: TextureFormat, pos: LatLon, range: Range, data_path: PathBuf,
+		device: &Device, queue: &Queue, format: TextureFormat, data_path: PathBuf, pos: LatLon, range: Range,
+		mode: Mode,
 	) -> Result<Self, LoadError> {
+		let sets = std::fs::read_to_string(data_path.join("_meta"))?;
+		let datasets = sets.lines().map(|line| data_path.join(line)).collect();
+		let cache = TileCache::new(device, queue, pos, range, datasets)?;
+
 		let vertex = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("FullscreenVS.hlsl"))) };
 		let fragment = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("RenderPS.hlsl"))) };
 
@@ -131,12 +136,12 @@ impl Renderer {
 				BindGroupLayoutEntry {
 					binding: 2,
 					visibility: ShaderStages::FRAGMENT,
-					ty: BindingType::Buffer {
-						ty: BufferBindingType::Storage { read_only: true },
-						has_dynamic_offset: false,
-						min_binding_size: None,
+					ty: BindingType::Texture {
+						sample_type: TextureSampleType::Sint,
+						view_dimension: TextureViewDimension::D2,
+						multisampled: false,
 					},
-					count: Some(NonZeroU32::new(360 * 180 + 1).unwrap()),
+					count: None,
 				},
 			],
 		});
@@ -167,14 +172,12 @@ impl Renderer {
 			multiview: None,
 		});
 
-		let data = Self::get_cbuffer_data(pos, range);
+		let data = Self::get_cbuffer_data(&cache, pos, range, mode);
 		let cbuffer = device.create_buffer_init(&BufferInitDescriptor {
 			label: Some("Map Render Constant Buffer"),
 			contents: &data,
 			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 		});
-
-		let cache = TileCache::new(device, queue, pos, range, data_path)?;
 
 		let group = device.create_bind_group(&BindGroupDescriptor {
 			label: Some("Map Render Bind Group"),
@@ -190,32 +193,21 @@ impl Renderer {
 				},
 				BindGroupEntry {
 					binding: 1,
-					resource: BindingResource::TextureView(cache.get_tile_map()),
+					resource: BindingResource::TextureView(cache.tile_map()),
 				},
 				BindGroupEntry {
 					binding: 2,
-					resource: BindingResource::BufferArray(&{
-						let vec: Vec<_> = cache
-							.get_tile_buffers()
-							.iter()
-							.map(|buffer| BufferBinding {
-								buffer,
-								offset: 0,
-								size: None,
-							})
-							.collect();
-						vec
-					}),
+					resource: BindingResource::TextureView(&cache.atlas()),
 				},
 			],
 		});
 
 		Ok(Self {
-			cache,
 			pipeline,
 			group,
 			group_layout,
 			cbuffer,
+			cache,
 		})
 	}
 
@@ -225,19 +217,26 @@ impl Renderer {
 		pass.draw(0..3, 0..1);
 	}
 
-	fn get_cbuffer_data(pos: LatLon, range: Range) -> [u8; 24] {
-		let mut data = [0; 24];
+	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, mode: Mode) -> [u8; 48] {
+		let mut data = [0; 48];
 
 		let float1 = &mut data[0..4];
 		float1.copy_from_slice(&pos.lat.to_radians().to_le_bytes());
 		let float2 = &mut data[4..8];
 		float2.copy_from_slice(&pos.lon.to_radians().to_le_bytes());
 
-		let diameter = range_to_radians(range);
 		let float3 = &mut data[16..20];
-		float3.copy_from_slice(&diameter.to_le_bytes());
+		float3.copy_from_slice(&range.horizontal_radians(mode).to_le_bytes());
 		let float4 = &mut data[20..24];
-		float4.copy_from_slice(&diameter.to_le_bytes());
+		float4.copy_from_slice(&range.vertical_radians().to_le_bytes());
+
+		let (width, height) = cache.atlas_resolution();
+		let uint1 = &mut data[32..36];
+		uint1.copy_from_slice(&width.to_le_bytes());
+		let uint2 = &mut data[36..40];
+		uint2.copy_from_slice(&height.to_le_bytes());
+		let uint3 = &mut data[40..44];
+		uint3.copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
 
 		data
 	}
