@@ -59,7 +59,7 @@ LatLon Project(float2 UV) {
     return ret;
 }
 
-float3 MapHeightToColor(uint height) {
+float3 MapHeightToColor(int height) {
     if (height < 500) {
         return L500;
     } else {
@@ -108,12 +108,16 @@ float4 Main(float2 UV: UV): SV_Target0 {
     float lon = position.lon + 180.f;
     uint2 tile_offset = TileMap.Load(int3(lon, lat, 0));
     
+    float3 ret;
     if (tile_offset.x < AtlasSize.x) {
-        float2 tile_uv = float2(lat - (uint)lat, lon - (uint)lon);
+        float2 tile_uv = float2(1.f - (lat - (uint)lat), lon - (uint)lon);
         uint2 pixel = tile_uv * AtlasSize.z + tile_offset;
         int height = TileAtlas.Load(int3(pixel, 0));
-        return pow(float4(MapHeightToColor(height * 3.28084), 1.f), 2.2f); // TODO: Remove stupid sRGB
+
+        ret = MapHeightToColor((float)height * 3.28084f);
     } else {
-        return float4(WATER, 1.f);
+        ret = WATER;
     }
+
+    return float4(pow(ret, 2.2f), 1.f);
 }

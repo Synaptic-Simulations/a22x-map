@@ -43,7 +43,7 @@ pub fn downsample(downsample: Downsample) {
 	let new_res = metadata.resolution as usize / downsample.factor as usize;
 	for_each_file(&downsample.input, |entry| {
 		let path = entry.path();
-		let (tile, lat, lon) = GeoTile::load(&metadata, &path)?;
+		let tile = GeoTile::load(&metadata, &path)?;
 		let data = tile.expand(&metadata);
 		let mut downsampled = Vec::with_capacity(new_res * new_res);
 		for i in 0..new_res {
@@ -64,6 +64,7 @@ pub fn downsample(downsample: Downsample) {
 			..metadata
 		};
 		let tile = GeoTile::new(&meta, downsampled)?;
+		let (lat, lon) = GeoTile::get_coordinates_from_file_name(&path);
 		tile.write_to_directory(&downsample.output, lat, lon)?;
 
 		Ok(())

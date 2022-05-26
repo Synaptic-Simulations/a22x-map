@@ -20,19 +20,31 @@ use wgpu::{
 	BufferBinding,
 	BufferBindingType,
 	BufferUsages,
+	Color,
 	ColorTargetState,
+	CommandEncoder,
 	Device,
+	Extent3d,
 	FragmentState,
+	LoadOp,
+	Operations,
 	PipelineLayoutDescriptor,
 	PrimitiveState,
 	PrimitiveTopology,
 	Queue,
 	RenderPass,
+	RenderPassColorAttachment,
+	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
 	ShaderStages,
+	Texture,
+	TextureDescriptor,
+	TextureDimension,
 	TextureFormat,
 	TextureSampleType,
+	TextureUsages,
+	TextureView,
 	TextureViewDimension,
 	VertexState,
 };
@@ -105,7 +117,7 @@ impl Renderer {
 	) -> Result<Self, LoadError> {
 		let sets = std::fs::read_to_string(data_path.join("_meta"))?;
 		let datasets = sets.lines().map(|line| data_path.join(line)).collect();
-		let cache = TileCache::new(device, queue, pos, range, datasets)?;
+		let cache = TileCache::new(device, queue, datasets, pos, range, mode)?;
 
 		let vertex = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("FullscreenVS.hlsl"))) };
 		let fragment = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("RenderPS.hlsl"))) };
@@ -119,7 +131,7 @@ impl Renderer {
 					ty: BindingType::Buffer {
 						ty: BufferBindingType::Uniform,
 						has_dynamic_offset: false,
-						min_binding_size: Some(NonZeroU64::new(16).unwrap()),
+						min_binding_size: Some(NonZeroU64::new(48).unwrap()),
 					},
 					count: None,
 				},

@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 static RANGE_TO_RADIANS: &[f32] = &[
 	0.0012935802,
 	0.00323395052,
@@ -71,6 +73,24 @@ impl Range {
 	pub fn vertical_tiles_loaded(self) -> u32 { self.vertical_degrees().ceil() as u32 + 1 }
 
 	pub fn horizontal_tiles_loaded(self, mode: Mode) -> u32 { self.horizontal_degrees(mode).ceil() as u32 + 1 }
+
+	pub fn to_str(self) -> &'static str {
+		match self {
+			Range::Nm2 => "2 nm",
+			Range::Nm5 => "5 nm",
+			Range::Nm10 => "10 nm",
+			Range::Nm20 => "20 nm",
+			Range::Nm40 => "40 nm",
+			Range::Nm80 => "80 nm",
+			Range::Nm160 => "160 nm",
+			Range::Nm320 => "320 nm",
+			Range::Nm640 => "640 nm",
+		}
+	}
+}
+
+impl Display for Range {
+	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.to_str()) }
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]

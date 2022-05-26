@@ -28,7 +28,7 @@ fn main() {
 				&std::fs::read_to_string(input).unwrap(),
 				"Main",
 				ty,
-				&vec!["-spirv"],
+				&vec!["-spirv", "-Zi"],
 				&[],
 			) {
 				Ok(bytecode) => bytecode,
