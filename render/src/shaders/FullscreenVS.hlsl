@@ -8,7 +8,6 @@ Output Main(uint Index: SV_VertexID) {
 
     output.UV = float2((Index << 1) & 2, Index & 2);
     output.Position = float4(output.UV * 2.f - 1.f, 0.f, 1.f);
-    // output.Position = float4(output.UV * float2(2.f, -2.f) + float2(-1.f, 1.f), 0.f, 1.f);
 
     return output;
 }

@@ -4,7 +4,7 @@ use render::{
 	LatLon,
 	Renderer,
 };
-use wgpu::{CommandEncoder, Device, Queue, RenderPass, TextureFormat};
+use wgpu::{Device, Queue, RenderPass, TextureFormat};
 
 pub struct Ui {
 	data_path: String,

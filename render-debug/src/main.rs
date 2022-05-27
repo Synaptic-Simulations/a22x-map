@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use egui::FontDefinitions;
-use egui_wgpu_backend::{wgpu::TextureFormat, ScreenDescriptor};
+use egui_wgpu_backend::ScreenDescriptor;
 use egui_winit_platform::{Platform, PlatformDescriptor};
 use futures_lite::future::block_on;
 use tracing_subscriber::prelude::*;
