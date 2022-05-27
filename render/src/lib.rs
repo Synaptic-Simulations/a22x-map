@@ -1,12 +1,11 @@
 use std::{
-	num::NonZeroU64,
 	ops::{Add, DerefMut, Sub},
 	path::PathBuf,
 };
 
 use geo::LoadError;
 use wgpu::{
-	include_spirv_raw,
+	include_spirv,
 	BindGroup,
 	BindGroupDescriptor,
 	BindGroupEntry,
@@ -20,31 +19,20 @@ use wgpu::{
 	BufferBindingType,
 	BufferDescriptor,
 	BufferUsages,
-	Color,
 	ColorTargetState,
 	CommandEncoder,
 	Device,
-	Extent3d,
 	FragmentState,
-	LoadOp,
-	Operations,
 	PipelineLayoutDescriptor,
 	PrimitiveState,
 	PrimitiveTopology,
 	Queue,
 	RenderPass,
-	RenderPassColorAttachment,
-	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
 	ShaderStages,
-	Texture,
-	TextureDescriptor,
-	TextureDimension,
 	TextureFormat,
 	TextureSampleType,
-	TextureUsages,
-	TextureView,
 	TextureViewDimension,
 	VertexState,
 };
@@ -133,8 +121,8 @@ impl Renderer {
 		// });
 		// let view = tex.create_view(&Default::default());
 
-		let vertex = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("FullscreenVS.hlsl"))) };
-		let fragment = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("RenderPS.hlsl"))) };
+		let vertex = device.create_shader_module(&include_spirv!(env!("FullscreenVS.hlsl")));
+		let fragment = device.create_shader_module(&include_spirv!(env!("RenderPS.hlsl")));
 
 		let group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
 			label: Some("Map Render Bind Group"),

@@ -62,7 +62,7 @@ fn main() {
 	let (device, queue) = block_on(adapter.request_device(
 		&DeviceDescriptor {
 			label: Some("device"),
-			features: Features::TIMESTAMP_QUERY | Features::SPIRV_SHADER_PASSTHROUGH,
+			features: Features::TIMESTAMP_QUERY,
 			limits: Default::default(),
 		},
 		None,

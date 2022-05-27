@@ -118,6 +118,11 @@ float3 MapHeightToColor(int height) {
 
 float4 Main(float2 UV: UV): SV_Target0 {
     LatLon rad_position = Project(UV);
+    float drdx = ddx(rad_position.lon);
+    float dpdx = drdx * 6378100.f;
+    float drdy = ddy(rad_position.lat);
+    float dpdy = drdy * 6378100.f;
+
     LatLon position = { RadToDeg(rad_position.lat), RadToDeg(rad_position.lon) };
     float lat = position.lat + 90.f;
     float raw_lon = position.lon + 180.f;
@@ -131,11 +136,18 @@ float4 Main(float2 UV: UV): SV_Target0 {
     TileStatus[index] = TILE_USED;
 
     uint2 tile_offset = TileMap.Load(int3(tile_loc, 0));
-    uint atlas_width, atlas_height, _;
+    float2 tile_uv = float2(1.f - (lat - (uint)lat), lon - (uint)lon);
+    uint2 pixel = tile_uv * TileSize + tile_offset;
+    float height = TileAtlas.Load(int3(pixel, 0));
+
+    float dzdx = ddx(height) / dpdx;
+    float dzdy = ddy(height) / dpdy;
+
+    int atlas_width, atlas_height, _;
     TileAtlas.GetDimensions(0, atlas_width, atlas_height, _);
-    uint2 atlas_dimensions = uint2(atlas_width, atlas_height);
-    bool not_found = tile_offset.x == atlas_dimensions.x;
-    bool unloaded = tile_offset.y == atlas_dimensions.y;
+    int2 atlas_dimensions = uint2(atlas_width, atlas_height);
+    bool not_found = tile_offset.x == (uint)atlas_dimensions.x;
+    bool unloaded = tile_offset.y == (uint)atlas_dimensions.y;
     
     float3 ret;
     if (not_found) {
@@ -143,17 +155,6 @@ float4 Main(float2 UV: UV): SV_Target0 {
     } else if (unloaded) {
         ret = float3(0.f, 0.f, 0.f);
     } else {
-        float2 tile_uv = float2(1.f - (lat - (uint)lat), lon - (uint)lon);
-        uint2 pixel = tile_uv * TileSize + tile_offset;
-        float height = TileAtlas.Load(int3(pixel, 0));
-
-        float drdx = ddx(rad_position.lon);
-        float dpdx = drdx * 6378100.f;
-        float drdy = ddy(rad_position.lat);
-        float dpdy = drdy * 6378100.f;
-
-        float dzdx = ddx(height) / dpdx;
-        float dzdy = ddy(height) / dpdy;
         float slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
         float aspect;
         if (dzdx != 0.f) {
@@ -176,7 +177,6 @@ float4 Main(float2 UV: UV): SV_Target0 {
         float hillshade = clamp(zcos * scos + zsin * ssin * cos(Azimuth - aspect), 0.5f, 1.f);
 
         ret = MapHeightToColor(height * 3.28084f) * hillshade;
-        // ret = hillshade;
     }
 
     return float4(pow(ret, 2.2f), 1.f);
