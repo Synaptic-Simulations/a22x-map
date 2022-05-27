@@ -21,6 +21,7 @@ pub struct Ui {
 	data_path: String,
 	position: LatLon,
 	range: Range,
+	heading: f32,
 	renderer: Option<Renderer>,
 }
 
@@ -30,6 +31,7 @@ impl Ui {
 			data_path: String::new(),
 			position: LatLon { lat: 0., lon: 0. },
 			range: Range::Nm10,
+			heading: 0.,
 			renderer: None,
 		}
 	}
@@ -97,6 +99,11 @@ impl Ui {
 						range_selector(ui, &mut self.range, Range::Nm640);
 					});
 			});
+
+			ui.horizontal(|ui| {
+				ui.label("Heading");
+				ui.add(DragValue::new(&mut self.heading).clamp_range(0.0..=360.0).speed(1.0));
+			});
 		});
 
 		tracy::zone!("Map Render");
@@ -104,6 +111,7 @@ impl Ui {
 			renderer.render(
 				self.position,
 				self.range,
+				self.heading,
 				Mode::FullPage,
 				device,
 				queue,

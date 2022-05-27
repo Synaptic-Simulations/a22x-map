@@ -182,7 +182,7 @@ impl Renderer {
 
 		let cbuffer = device.create_buffer(&BufferDescriptor {
 			label: Some("Map Render Constant Buffer"),
-			size: 36,
+			size: 32,
 			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -199,11 +199,15 @@ impl Renderer {
 	}
 
 	pub fn render<'a, T: DerefMut<Target = CommandEncoder>, U: DerefMut<Target = RenderPass<'a>>>(
-		&'a mut self, pos: LatLon, range: Range, mode: Mode, device: &Device, queue: &Queue, encoder: &'a mut T,
-		pass: impl FnOnce(&'a mut T) -> U,
+		&'a mut self, pos: LatLon, range: Range, heading: f32, mode: Mode, device: &Device, queue: &Queue,
+		encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
 	) {
 		encoder.clear_buffer(self.cache.tile_status(), 0, None);
-		queue.write_buffer(&self.cbuffer, 0, &Self::get_cbuffer_data(&self.cache, pos, range, mode));
+		queue.write_buffer(
+			&self.cbuffer,
+			0,
+			&Self::get_cbuffer_data(&self.cache, pos, range, heading, mode),
+		);
 
 		if self.cache.populate_tiles(device, queue, range) {
 			self.group = Self::make_bind_group(device, &self.group_layout, &self.cbuffer, &self.cache);
@@ -250,16 +254,16 @@ impl Renderer {
 		})
 	}
 
-	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, mode: Mode) -> [u8; 28] {
-		let mut data = [0; 28];
+	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, heading: f32, mode: Mode) -> [u8; 32] {
+		let mut data = [0; 32];
 
 		data[0..4].copy_from_slice(&pos.lat.to_radians().to_le_bytes());
 		data[4..8].copy_from_slice(&pos.lon.to_radians().to_le_bytes());
 
 		data[16..20].copy_from_slice(&range.horizontal_radians(mode).to_le_bytes());
 		data[20..24].copy_from_slice(&range.vertical_radians().to_le_bytes());
-
 		data[24..28].copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
+		data[28..32].copy_from_slice(&(360. - heading).to_radians().to_le_bytes());
 
 		data
 	}

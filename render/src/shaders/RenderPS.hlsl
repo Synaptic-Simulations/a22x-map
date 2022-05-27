@@ -32,6 +32,7 @@ cbuffer UniformData {
     LatLon MapCenter; // Radians.
     float2 MapDiameter;
     uint TileSize;
+    float Heading; // Radians.
 };
 
 [[vk::binding(1)]] Texture2D<uint2> TileMap;
@@ -47,7 +48,12 @@ float RadToDeg(float rad) {
 }
 
 LatLon Project(float2 UV) {
-    float2 xy = (UV - float2(0.5f, 0.5f)) * MapDiameter;
+    float headsin, headcos;
+    sincos(Heading, headsin, headcos);
+    float aspect_ratio = MapDiameter.x / MapDiameter.y;
+    float2 c_uv = float2(UV.x * aspect_ratio, UV.y);
+    float2 uv = float2(c_uv.x * headcos - c_uv.y * headsin, c_uv.x * headsin + c_uv.y * headcos);
+    float2 xy = (uv - float2(0.5f, 0.5f)) * MapDiameter.y;
 
     float latsin, latcos;
     sincos(MapCenter.lat, latsin, latcos);
@@ -113,12 +119,12 @@ float3 MapHeightToColor(int height) {
 float4 Main(float2 UV: UV): SV_Target0 {
     LatLon position = Project(UV);
     float lat = position.lat + 90.f;
-    float lon = position.lon + 180.f;
-    int mod_lon = lon % 360;
-    if (mod_lon < 0)  {
-        mod_lon = 360 + mod_lon;
+    float raw_lon = position.lon + 180.f;
+    float lon = raw_lon % 360;
+    if (lon < 0)  {
+        lon = 360 + lon;
     }
-    uint2 tile_loc = uint2(mod_lon, lat);
+    uint2 tile_loc = uint2(lon, lat);
 
     uint index = tile_loc.y * 360 + tile_loc.x;
     TileStatus[index] = TILE_USED;
@@ -138,9 +144,12 @@ float4 Main(float2 UV: UV): SV_Target0 {
     } else {
         float2 tile_uv = float2(1.f - (lat - (uint)lat), lon - (uint)lon);
         uint2 pixel = tile_uv * TileSize + tile_offset;
-        int height = TileAtlas.Load(int3(pixel, 0));
+        float height = TileAtlas.Load(int3(pixel, 0));
 
-        ret = MapHeightToColor((float)height * 3.28084f);
+        float dx = ddx(height);
+        float dy = ddy(height);
+
+        ret = MapHeightToColor(height * 3.28084f);
     }
 
     return float4(pow(ret, 2.2f), 1.f);
