@@ -22,6 +22,8 @@ pub struct Ui {
 	position: LatLon,
 	range: Range,
 	heading: f32,
+	azimuth: f32,
+	altitude: f32,
 	renderer: Option<Renderer>,
 }
 
@@ -32,6 +34,8 @@ impl Ui {
 			position: LatLon { lat: 0., lon: 0. },
 			range: Range::Nm10,
 			heading: 0.,
+			azimuth: 315.,
+			altitude: 45.,
 			renderer: None,
 		}
 	}
@@ -104,6 +108,13 @@ impl Ui {
 				ui.label("Heading");
 				ui.add(DragValue::new(&mut self.heading).clamp_range(0.0..=360.0).speed(1.0));
 			});
+
+			ui.horizontal(|ui| {
+				ui.label("Azimuth");
+				ui.add(DragValue::new(&mut self.azimuth).clamp_range(0.0..=360.0).speed(1.0));
+				ui.label("Altitude");
+				ui.add(DragValue::new(&mut self.altitude).clamp_range(0.0..=90.0).speed(1.0));
+			})
 		});
 
 		tracy::zone!("Map Render");
@@ -112,6 +123,8 @@ impl Ui {
 				self.position,
 				self.range,
 				self.heading,
+				self.azimuth,
+				self.altitude,
 				Mode::FullPage,
 				device,
 				queue,

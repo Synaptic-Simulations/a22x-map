@@ -284,7 +284,7 @@ impl Atlas {
 		);
 
 		self.curr_offset.x += self.curr_tile_res as u32;
-		if self.curr_offset.x >= self.width {
+		if self.curr_offset.x + self.curr_tile_res as u32 >= self.width {
 			self.curr_offset.x = 0;
 			self.curr_offset.y += self.curr_tile_res as u32;
 		}
@@ -293,7 +293,6 @@ impl Atlas {
 	}
 
 	fn gc_tiles(&mut self, tiles_used: &[u32], tile_offsets: &mut [TileOffset]) -> bool {
-		println!("Triggered GC");
 		let mut reclaimed = false;
 		for (used, offset) in tiles_used.iter().zip(tile_offsets.iter_mut()) {
 			if *used == 0 && *offset != self.unloaded() && *offset != self.not_found() {
@@ -306,8 +305,6 @@ impl Atlas {
 	}
 
 	fn recreate_atlas(&mut self, device: &Device) {
-		println!("Triggered recreation");
-
 		let limits = device.limits();
 		if self.width == limits.max_texture_dimension_2d && self.height == limits.max_texture_dimension_2d {
 			panic!("Atlas is already the maximum size");

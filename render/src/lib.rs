@@ -20,20 +20,31 @@ use wgpu::{
 	BufferBindingType,
 	BufferDescriptor,
 	BufferUsages,
+	Color,
 	ColorTargetState,
 	CommandEncoder,
 	Device,
+	Extent3d,
 	FragmentState,
+	LoadOp,
+	Operations,
 	PipelineLayoutDescriptor,
 	PrimitiveState,
 	PrimitiveTopology,
 	Queue,
 	RenderPass,
+	RenderPassColorAttachment,
+	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
 	ShaderStages,
+	Texture,
+	TextureDescriptor,
+	TextureDimension,
 	TextureFormat,
 	TextureSampleType,
+	TextureUsages,
+	TextureView,
 	TextureViewDimension,
 	VertexState,
 };
@@ -97,6 +108,7 @@ pub struct Renderer {
 	group_layout: BindGroupLayout,
 	cbuffer: Buffer,
 	cache: TileCache,
+	// view: TextureView,
 }
 
 impl Renderer {
@@ -104,6 +116,22 @@ impl Renderer {
 		let sets = std::fs::read_to_string(data_path.join("_meta"))?;
 		let datasets = sets.lines().map(|line| data_path.join(line)).collect();
 		let cache = TileCache::new(device, datasets)?;
+
+		// let format = TextureFormat::R32Float;
+		// let tex = device.create_texture(&TextureDescriptor {
+		// 	label: None,
+		// 	size: Extent3d {
+		// 		width: 1480,
+		// 		height: 1100,
+		// 		depth_or_array_layers: 1,
+		// 	},
+		// 	mip_level_count: 1,
+		// 	sample_count: 1,
+		// 	dimension: TextureDimension::D2,
+		// 	format,
+		// 	usage: TextureUsages::RENDER_ATTACHMENT,
+		// });
+		// let view = tex.create_view(&Default::default());
 
 		let vertex = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("FullscreenVS.hlsl"))) };
 		let fragment = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("RenderPS.hlsl"))) };
@@ -117,7 +145,7 @@ impl Renderer {
 					ty: BindingType::Buffer {
 						ty: BufferBindingType::Uniform,
 						has_dynamic_offset: false,
-						min_binding_size: Some(NonZeroU64::new(28).unwrap()),
+						min_binding_size: None,
 					},
 					count: None,
 				},
@@ -182,7 +210,7 @@ impl Renderer {
 
 		let cbuffer = device.create_buffer(&BufferDescriptor {
 			label: Some("Map Render Constant Buffer"),
-			size: 32,
+			size: 40,
 			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -195,18 +223,19 @@ impl Renderer {
 			group_layout,
 			cbuffer,
 			cache,
+			// view,
 		})
 	}
 
 	pub fn render<'a, T: DerefMut<Target = CommandEncoder>, U: DerefMut<Target = RenderPass<'a>>>(
-		&'a mut self, pos: LatLon, range: Range, heading: f32, mode: Mode, device: &Device, queue: &Queue,
-		encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
+		&'a mut self, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, mode: Mode,
+		device: &Device, queue: &Queue, encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
 	) {
 		encoder.clear_buffer(self.cache.tile_status(), 0, None);
 		queue.write_buffer(
 			&self.cbuffer,
 			0,
-			&Self::get_cbuffer_data(&self.cache, pos, range, heading, mode),
+			&Self::get_cbuffer_data(&self.cache, pos, range, heading, azimuth, altitude, mode),
 		);
 
 		if self.cache.populate_tiles(device, queue, range) {
@@ -215,6 +244,18 @@ impl Renderer {
 
 		{
 			let mut pass = pass(encoder);
+			// let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+			// 	label: None,
+			// 	color_attachments: &[RenderPassColorAttachment {
+			// 		view: &self.view,
+			// 		resolve_target: None,
+			// 		ops: Operations {
+			// 			load: LoadOp::Clear(Color::BLACK),
+			// 			store: true,
+			// 		},
+			// 	}],
+			// 	depth_stencil_attachment: None,
+			// });
 			pass.set_pipeline(&self.pipeline);
 			pass.set_bind_group(0, &self.group, &[]);
 			pass.draw(0..3, 0..1);
@@ -254,8 +295,10 @@ impl Renderer {
 		})
 	}
 
-	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, heading: f32, mode: Mode) -> [u8; 32] {
-		let mut data = [0; 32];
+	fn get_cbuffer_data(
+		cache: &TileCache, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, mode: Mode,
+	) -> [u8; 40] {
+		let mut data = [0; 40];
 
 		data[0..4].copy_from_slice(&pos.lat.to_radians().to_le_bytes());
 		data[4..8].copy_from_slice(&pos.lon.to_radians().to_le_bytes());
@@ -264,6 +307,12 @@ impl Renderer {
 		data[20..24].copy_from_slice(&range.vertical_radians().to_le_bytes());
 		data[24..28].copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
 		data[28..32].copy_from_slice(&(360. - heading).to_radians().to_le_bytes());
+		data[32..36].copy_from_slice(&(90. - altitude).to_radians().to_le_bytes());
+		let mut azimuth = 360. - azimuth + 90.;
+		if azimuth >= 360. {
+			azimuth -= 360.;
+		}
+		data[36..40].copy_from_slice(&azimuth.to_radians().to_le_bytes());
 
 		data
 	}

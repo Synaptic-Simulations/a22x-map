@@ -33,6 +33,8 @@ cbuffer UniformData {
     float2 MapDiameter;
     uint TileSize;
     float Heading; // Radians.
+    float Zenith;
+    float Azimuth;
 };
 
 [[vk::binding(1)]] Texture2D<uint2> TileMap;
@@ -64,52 +66,50 @@ LatLon Project(float2 UV) {
     float lat = asin(ccos * latsin + xy.y * csin * latcos / c);
     float lon = MapCenter.lon + atan2(xy.x * csin, c * latcos * ccos - xy.y * latsin * csin);
 
-    LatLon ret = { RadToDeg(lat), RadToDeg(lon) };
+    LatLon ret = { lat, lon };
     return ret;
 }
 
 float3 MapHeightToColor(int height) {
-    if (height < 500) {
+    if (height == -500) {
+        return L500;
+    } else if (height < 500) {
         return L500;
     } else {
-        if (height < 500) {
-            return L500;
-        } else {
-            switch(height / 1000) {
-                case 0: return L1000;
-                case 1: return L2000;
-                case 2: return L3000;
-                case 3: return L4000;
-                case 4: return L5000;
-                case 5: return L6000;
-                case 6: return L7000;
-                case 7: return L8000;
-                case 8: return L9000;
-                case 9: return L10000;
-                case 10: return L11000;
-                case 11: return L12000;
-                case 12: return L13000;
-                case 13: return L15000;
-                case 14: return L15000;
-                case 15: return L17000;
-                case 16: return L17000;
-                case 17: return L19000;
-                case 18: return L19000;
-                case 19: return L21000;
-                case 20: return L21000;
-                case 21: return L33000;
-                case 22: return L33000;
-                case 23: return L33000;
-                case 24: return L33000;
-                case 25: return L33000;
-                case 26: return L33000;
-                case 27: return L33000;
-                case 28: return L33000;
-                case 29: return L33000;
-                case 30: return L33000;
-                case 31: return L33000;
-                case 32: return L33000;     
-            }
+        switch(height / 1000) {
+            case 0: return L1000;
+            case 1: return L2000;
+            case 2: return L3000;
+            case 3: return L4000;
+            case 4: return L5000;
+            case 5: return L6000;
+            case 6: return L7000;
+            case 7: return L8000;
+            case 8: return L9000;
+            case 9: return L10000;
+            case 10: return L11000;
+            case 11: return L12000;
+            case 12: return L13000;
+            case 13: return L15000;
+            case 14: return L15000;
+            case 15: return L17000;
+            case 16: return L17000;
+            case 17: return L19000;
+            case 18: return L19000;
+            case 19: return L21000;
+            case 20: return L21000;
+            case 21: return L33000;
+            case 22: return L33000;
+            case 23: return L33000;
+            case 24: return L33000;
+            case 25: return L33000;
+            case 26: return L33000;
+            case 27: return L33000;
+            case 28: return L33000;
+            case 29: return L33000;
+            case 30: return L33000;
+            case 31: return L33000;
+            case 32: return L33000;     
         }
     }
 
@@ -117,7 +117,8 @@ float3 MapHeightToColor(int height) {
 }
 
 float4 Main(float2 UV: UV): SV_Target0 {
-    LatLon position = Project(UV);
+    LatLon rad_position = Project(UV);
+    LatLon position = { RadToDeg(rad_position.lat), RadToDeg(rad_position.lon) };
     float lat = position.lat + 90.f;
     float raw_lon = position.lon + 180.f;
     float lon = raw_lon % 360;
@@ -146,10 +147,36 @@ float4 Main(float2 UV: UV): SV_Target0 {
         uint2 pixel = tile_uv * TileSize + tile_offset;
         float height = TileAtlas.Load(int3(pixel, 0));
 
-        float dx = ddx(height);
-        float dy = ddy(height);
+        float drdx = ddx(rad_position.lon);
+        float dpdx = drdx * 6378100.f;
+        float drdy = ddy(rad_position.lat);
+        float dpdy = drdy * 6378100.f;
 
-        ret = MapHeightToColor(height * 3.28084f);
+        float dzdx = ddx(height) / dpdx;
+        float dzdy = ddy(height) / dpdy;
+        float slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
+        float aspect;
+        if (dzdx != 0.f) {
+            aspect = atan2(dzdy, -dzdx);
+            if (aspect < 0.f) {
+                aspect += 6.28318530718;
+            }
+        } else {
+            if (dzdy > 0.f) {
+                aspect = 1.57079632679f;
+            } else if (dzdy < 0.f) {
+                aspect = 4.71238898038f;
+            }
+        }
+
+        float zcos, zsin;
+        sincos(Zenith, zsin, zcos);
+        float scos, ssin;
+        sincos(slope, ssin, scos);
+        float hillshade = clamp(zcos * scos + zsin * ssin * cos(Azimuth - aspect), 0.5f, 1.f);
+
+        ret = MapHeightToColor(height * 3.28084f) * hillshade;
+        // ret = hillshade;
     }
 
     return float4(pow(ret, 2.2f), 1.f);

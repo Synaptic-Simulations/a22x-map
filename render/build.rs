@@ -28,7 +28,7 @@ fn main() {
 				&std::fs::read_to_string(input).unwrap(),
 				"Main",
 				ty,
-				&vec!["-spirv", "-Zi"],
+				&vec!["-spirv", "-Zi", "-fspv-target-env=vulkan1.1"],
 				&[],
 			) {
 				Ok(bytecode) => bytecode,
