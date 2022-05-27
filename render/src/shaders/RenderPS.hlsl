@@ -20,6 +20,8 @@
 #define UNKNOWN_TERRAIN float3(0.41f, 0.15f, 0.42f)
 #define WATER float3(0.06f, 0.24f, 0.41f)
 
+#define TILE_USED 1
+
 struct LatLon {
     float lat;
     float lon;
@@ -29,11 +31,12 @@ struct LatLon {
 cbuffer UniformData {
     LatLon MapCenter; // Radians.
     float2 MapDiameter;
-    uint3 AtlasSize;
+    uint TileSize;
 };
 
 [[vk::binding(1)]] Texture2D<uint2> TileMap;
-[[vk::binding(2)]] Texture2D<int> TileAtlas;
+[[vk::binding(2)]] RWStructuredBuffer<uint> TileStatus;
+[[vk::binding(3)]] Texture2D<int> TileAtlas;
 
 float DegToRad(float deg) {
     return deg * 0.01745329251f;
@@ -111,17 +114,33 @@ float4 Main(float2 UV: UV): SV_Target0 {
     LatLon position = Project(UV);
     float lat = position.lat + 90.f;
     float lon = position.lon + 180.f;
-    uint2 tile_offset = TileMap.Load(int3(lon, lat, 0));
+    int mod_lon = lon % 360;
+    if (mod_lon < 0)  {
+        mod_lon = 360 + mod_lon;
+    }
+    uint2 tile_loc = uint2(mod_lon, lat);
+
+    uint index = tile_loc.y * 360 + tile_loc.x;
+    TileStatus[index] = TILE_USED;
+
+    uint2 tile_offset = TileMap.Load(int3(tile_loc, 0));
+    uint atlas_width, atlas_height, _;
+    TileAtlas.GetDimensions(0, atlas_width, atlas_height, _);
+    uint2 atlas_dimensions = uint2(atlas_width, atlas_height);
+    bool not_found = tile_offset.x == atlas_dimensions.x;
+    bool unloaded = tile_offset.y == atlas_dimensions.y;
     
     float3 ret;
-    if (tile_offset.x < AtlasSize.x) {
+    if (not_found) {
+        ret = WATER;
+    } else if (unloaded) {
+        ret = float3(0.f, 0.f, 0.f);
+    } else {
         float2 tile_uv = float2(1.f - (lat - (uint)lat), lon - (uint)lon);
-        uint2 pixel = tile_uv * AtlasSize.z + tile_offset;
+        uint2 pixel = tile_uv * TileSize + tile_offset;
         int height = TileAtlas.Load(int3(pixel, 0));
 
         ret = MapHeightToColor((float)height * 3.28084f);
-    } else {
-        ret = WATER;
     }
 
     return float4(pow(ret, 2.2f), 1.f);

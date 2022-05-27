@@ -4,7 +4,18 @@ use render::{
 	LatLon,
 	Renderer,
 };
-use wgpu::{Device, Queue, RenderPass, TextureFormat};
+use tracy::wgpu::EncoderProfiler;
+use wgpu::{
+	Color,
+	Device,
+	LoadOp,
+	Operations,
+	Queue,
+	RenderPassColorAttachment,
+	RenderPassDescriptor,
+	TextureFormat,
+	TextureView,
+};
 
 pub struct Ui {
 	data_path: String,
@@ -24,7 +35,8 @@ impl Ui {
 	}
 
 	pub fn update<'a>(
-		&'a mut self, ctx: &Context, pass: &mut RenderPass<'a>, device: &Device, queue: &Queue, format: TextureFormat,
+		&'a mut self, ctx: &Context, device: &Device, queue: &Queue, encoder: &mut EncoderProfiler, view: &TextureView,
+		format: TextureFormat,
 	) {
 		Window::new("Settings").show(ctx, |ui| {
 			tracy::zone!("UI Description");
@@ -36,15 +48,7 @@ impl Ui {
 					if let Some(data) = rfd::FileDialog::new().pick_folder() {
 						if let Some(data_s) = data.to_str() {
 							self.data_path = data_s.into();
-							let renderer = match Renderer::new(
-								device,
-								queue,
-								format,
-								data,
-								self.position,
-								self.range,
-								Mode::FullPage,
-							) {
+							let renderer = match Renderer::new(device, format, data) {
 								Ok(x) => x,
 								Err(e) => {
 									log::error!("{}", e);
@@ -97,7 +101,31 @@ impl Ui {
 
 		tracy::zone!("Map Render");
 		if let Some(renderer) = self.renderer.as_mut() {
-			renderer.render(pass);
+			renderer.render(
+				self.position,
+				self.range,
+				Mode::FullPage,
+				device,
+				queue,
+				encoder,
+				|encoder| {
+					tracy::wgpu_render_pass!(
+						encoder,
+						RenderPassDescriptor {
+							label: Some("Map Render"),
+							color_attachments: &[RenderPassColorAttachment {
+								view,
+								resolve_target: None,
+								ops: Operations {
+									load: LoadOp::Clear(Color::BLACK),
+									store: true,
+								}
+							}],
+							depth_stencil_attachment: None,
+						}
+					)
+				},
+			);
 		}
 	}
 }

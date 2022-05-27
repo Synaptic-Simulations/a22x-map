@@ -1,13 +1,12 @@
 use std::{
 	num::NonZeroU64,
-	ops::{Add, Sub},
+	ops::{Add, DerefMut, Sub},
 	path::PathBuf,
 };
 
 use geo::LoadError;
 use wgpu::{
 	include_spirv_raw,
-	util::{BufferInitDescriptor, DeviceExt},
 	BindGroup,
 	BindGroupDescriptor,
 	BindGroupEntry,
@@ -19,8 +18,10 @@ use wgpu::{
 	Buffer,
 	BufferBinding,
 	BufferBindingType,
+	BufferDescriptor,
 	BufferUsages,
 	ColorTargetState,
+	CommandEncoder,
 	Device,
 	FragmentState,
 	PipelineLayoutDescriptor,
@@ -99,13 +100,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	pub fn new(
-		device: &Device, queue: &Queue, format: TextureFormat, data_path: PathBuf, pos: LatLon, range: Range,
-		mode: Mode,
-	) -> Result<Self, LoadError> {
+	pub fn new(device: &Device, format: TextureFormat, data_path: PathBuf) -> Result<Self, LoadError> {
 		let sets = std::fs::read_to_string(data_path.join("_meta"))?;
 		let datasets = sets.lines().map(|line| data_path.join(line)).collect();
-		let cache = TileCache::new(device, queue, datasets, pos, range, mode)?;
+		let cache = TileCache::new(device, datasets)?;
 
 		let vertex = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("FullscreenVS.hlsl"))) };
 		let fragment = unsafe { device.create_shader_module_spirv(&include_spirv_raw!(env!("RenderPS.hlsl"))) };
@@ -119,7 +117,7 @@ impl Renderer {
 					ty: BindingType::Buffer {
 						ty: BufferBindingType::Uniform,
 						has_dynamic_offset: false,
-						min_binding_size: Some(NonZeroU64::new(48).unwrap()),
+						min_binding_size: Some(NonZeroU64::new(28).unwrap()),
 					},
 					count: None,
 				},
@@ -135,6 +133,16 @@ impl Renderer {
 				},
 				BindGroupLayoutEntry {
 					binding: 2,
+					visibility: ShaderStages::FRAGMENT,
+					ty: BindingType::Buffer {
+						ty: BufferBindingType::Storage { read_only: false },
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+					count: None,
+				},
+				BindGroupLayoutEntry {
+					binding: 3,
 					visibility: ShaderStages::FRAGMENT,
 					ty: BindingType::Texture {
 						sample_type: TextureSampleType::Sint,
@@ -172,16 +180,47 @@ impl Renderer {
 			multiview: None,
 		});
 
-		let data = Self::get_cbuffer_data(&cache, pos, range, mode);
-		let cbuffer = device.create_buffer_init(&BufferInitDescriptor {
+		let cbuffer = device.create_buffer(&BufferDescriptor {
 			label: Some("Map Render Constant Buffer"),
-			contents: &data,
+			size: 36,
 			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+			mapped_at_creation: false,
 		});
 
-		let group = device.create_bind_group(&BindGroupDescriptor {
+		let group = Self::make_bind_group(device, &group_layout, &cbuffer, &cache);
+
+		Ok(Self {
+			pipeline,
+			group,
+			group_layout,
+			cbuffer,
+			cache,
+		})
+	}
+
+	pub fn render<'a, T: DerefMut<Target = CommandEncoder>, U: DerefMut<Target = RenderPass<'a>>>(
+		&'a mut self, pos: LatLon, range: Range, mode: Mode, device: &Device, queue: &Queue, encoder: &'a mut T,
+		pass: impl FnOnce(&'a mut T) -> U,
+	) {
+		encoder.clear_buffer(self.cache.tile_status(), 0, None);
+		queue.write_buffer(&self.cbuffer, 0, &Self::get_cbuffer_data(&self.cache, pos, range, mode));
+
+		if self.cache.populate_tiles(device, queue, range) {
+			self.group = Self::make_bind_group(device, &self.group_layout, &self.cbuffer, &self.cache);
+		}
+
+		{
+			let mut pass = pass(encoder);
+			pass.set_pipeline(&self.pipeline);
+			pass.set_bind_group(0, &self.group, &[]);
+			pass.draw(0..3, 0..1);
+		}
+	}
+
+	fn make_bind_group(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache) -> BindGroup {
+		device.create_bind_group(&BindGroupDescriptor {
 			label: Some("Map Render Bind Group"),
-			layout: &group_layout,
+			layout,
 			entries: &[
 				BindGroupEntry {
 					binding: 0,
@@ -197,46 +236,30 @@ impl Renderer {
 				},
 				BindGroupEntry {
 					binding: 2,
+					resource: BindingResource::Buffer(BufferBinding {
+						buffer: cache.tile_status(),
+						offset: 0,
+						size: None,
+					}),
+				},
+				BindGroupEntry {
+					binding: 3,
 					resource: BindingResource::TextureView(&cache.atlas()),
 				},
 			],
-		});
-
-		Ok(Self {
-			pipeline,
-			group,
-			group_layout,
-			cbuffer,
-			cache,
 		})
 	}
 
-	pub fn render<'a>(&'a mut self, pass: &mut RenderPass<'a>) {
-		pass.set_pipeline(&self.pipeline);
-		pass.set_bind_group(0, &self.group, &[]);
-		pass.draw(0..3, 0..1);
-	}
+	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, mode: Mode) -> [u8; 28] {
+		let mut data = [0; 28];
 
-	fn get_cbuffer_data(cache: &TileCache, pos: LatLon, range: Range, mode: Mode) -> [u8; 48] {
-		let mut data = [0; 48];
+		data[0..4].copy_from_slice(&pos.lat.to_radians().to_le_bytes());
+		data[4..8].copy_from_slice(&pos.lon.to_radians().to_le_bytes());
 
-		let float1 = &mut data[0..4];
-		float1.copy_from_slice(&pos.lat.to_radians().to_le_bytes());
-		let float2 = &mut data[4..8];
-		float2.copy_from_slice(&pos.lon.to_radians().to_le_bytes());
+		data[16..20].copy_from_slice(&range.horizontal_radians(mode).to_le_bytes());
+		data[20..24].copy_from_slice(&range.vertical_radians().to_le_bytes());
 
-		let float3 = &mut data[16..20];
-		float3.copy_from_slice(&range.horizontal_radians(mode).to_le_bytes());
-		let float4 = &mut data[20..24];
-		float4.copy_from_slice(&range.vertical_radians().to_le_bytes());
-
-		let (width, height) = cache.atlas_resolution();
-		let uint1 = &mut data[32..36];
-		uint1.copy_from_slice(&width.to_le_bytes());
-		let uint2 = &mut data[36..40];
-		uint2.copy_from_slice(&height.to_le_bytes());
-		let uint3 = &mut data[40..44];
-		uint3.copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
+		data[24..28].copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
 
 		data
 	}

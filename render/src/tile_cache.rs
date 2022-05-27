@@ -1,12 +1,20 @@
-use std::path::PathBuf;
+use std::{num::NonZeroU32, path::PathBuf};
 
 use geo::{GeoTile, LoadError, TileMetadata};
 use wgpu::{
-	util::DeviceExt,
+	Buffer,
+	BufferDescriptor,
+	BufferUsages,
 	Device,
 	Extent3d,
+	ImageCopyTexture,
+	ImageDataLayout,
+	Maintain,
+	MapMode,
+	Origin3d,
 	Queue,
 	Texture,
+	TextureAspect,
 	TextureDescriptor,
 	TextureDimension,
 	TextureUsages,
@@ -16,7 +24,6 @@ use wgpu::{
 
 use crate::{
 	range::{Mode, Range, RANGES, RANGE_TO_DEGREES},
-	LatLon,
 	TextureFormat,
 };
 
@@ -25,23 +32,164 @@ struct Metadata {
 	dir: PathBuf,
 }
 
+#[repr(C)]
+#[derive(Copy, Clone, Default, PartialEq, Eq)]
+struct TileOffset {
+	x: u32,
+	y: u32,
+}
+
 pub struct TileCache {
-	position: LatLon,
-	range: Range,
-	metadata: Vec<Metadata>,
-	lods: Vec<usize>,
 	tile_map: Texture,
 	tile_map_view: TextureView,
-	atlas: Texture,
-	atlas_view: TextureView,
-	width: u32,
-	height: u32,
+	tile_status: Buffer,
+	atlas: Atlas,
+	tiles: Vec<TileOffset>,
 }
 
 impl TileCache {
-	pub fn new(
-		device: &Device, queue: &Queue, datasets: Vec<PathBuf>, position: LatLon, range: Range, mode: Mode,
-	) -> Result<Self, LoadError> {
+	pub fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
+		let tile_map = device.create_texture(&TextureDescriptor {
+			label: Some("Tile Map"),
+			size: Extent3d {
+				width: 360,
+				height: 180,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: TextureDimension::D2,
+			format: TextureFormat::Rg32Uint,
+			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+		});
+		let tile_map_view = tile_map.create_view(&TextureViewDescriptor {
+			label: Some("Tile Map View"),
+			..Default::default()
+		});
+
+		let tile_status = device.create_buffer(&BufferDescriptor {
+			label: Some("Tile Status"),
+			size: 360 * 180 * 4,
+			usage: BufferUsages::COPY_DST | BufferUsages::MAP_READ | BufferUsages::STORAGE,
+			mapped_at_creation: false,
+		});
+
+		let atlas = Atlas::new(device, datasets)?;
+
+		Ok(Self {
+			tile_map,
+			tile_map_view,
+			tile_status,
+			tiles: vec![atlas.unloaded(); 360 * 180],
+			atlas,
+		})
+	}
+
+	pub fn populate_tiles(&mut self, device: &Device, queue: &Queue, range: Range) -> bool {
+		if self.atlas.needs_clear(range) {
+			self.clear();
+		}
+		let meta = self.atlas.lods[range as usize];
+
+		{
+			let _ = self.tile_status.slice(..).map_async(MapMode::Read);
+			device.poll(Maintain::Wait);
+			let buf = self.tile_status.slice(..).get_mapped_range();
+			let used = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u32, buf.len() / 4) };
+			for lon in 0..360 {
+				for lat in 0..180 {
+					let index = (lat * 360 + lon) as usize;
+					let offset = &mut self.tiles[index];
+					if *offset != self.atlas.unloaded() || used[index] == 0 {
+						continue;
+					}
+
+					let lon = lon as i16 - 180;
+					let lat = lat as i16 - 90;
+
+					let metadata = &self.atlas.metadata[meta];
+					let mut path = metadata.dir.clone();
+					GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
+					let tile = match GeoTile::load(&metadata.metadata, &path) {
+						Ok(x) => x,
+						Err(_) => {
+							*offset = self.atlas.not_found();
+							continue;
+						},
+					}
+					.expand(&metadata.metadata);
+
+					let offset =
+						if let Some(offset) = self.atlas.upload_tile(device, queue, &tile, &used, &mut self.tiles) {
+							offset
+						} else {
+							std::mem::drop(buf);
+							self.tile_status.unmap();
+							return true;
+						};
+					self.tiles[index] = offset;
+				}
+			}
+		}
+
+		self.tile_status.unmap();
+
+		queue.write_texture(
+			self.tile_map.as_image_copy(),
+			unsafe {
+				std::slice::from_raw_parts(
+					self.tiles.as_ptr() as _,
+					self.tiles.len() * std::mem::size_of::<TileOffset>(),
+				)
+			},
+			ImageDataLayout {
+				offset: 0,
+				bytes_per_row: Some(NonZeroU32::new(std::mem::size_of::<TileOffset>() as u32 * 360).unwrap()),
+				rows_per_image: Some(NonZeroU32::new(180).unwrap()),
+			},
+			Extent3d {
+				width: 360,
+				height: 180,
+				depth_or_array_layers: 1,
+			},
+		);
+
+		false
+	}
+
+	pub fn clear(&mut self) {
+		for offset in self.tiles.iter_mut() {
+			*offset = self.atlas.unloaded();
+		}
+		self.atlas.clear();
+	}
+
+	pub fn tile_map(&self) -> &TextureView { &self.tile_map_view }
+
+	pub fn tile_status(&self) -> &Buffer { &self.tile_status }
+
+	pub fn atlas(&self) -> &TextureView { &self.atlas.view }
+
+	pub fn tile_size_for_range(&self, range: Range) -> u32 {
+		self.atlas.metadata[self.atlas.lods[range as usize]].metadata.resolution as _
+	}
+}
+
+struct Atlas {
+	metadata: Vec<Metadata>,
+	lods: Vec<usize>,
+	atlas: Texture,
+	view: TextureView,
+	width: u32,
+	height: u32,
+	curr_tile_res: u16,
+	curr_offset: TileOffset,
+	collected_tiles: Vec<TileOffset>,
+	tried_gc: bool,
+}
+
+impl Atlas {
+	fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
 		let metadata: Result<Vec<_>, std::io::Error> = datasets
 			.into_iter()
 			.map(|dir| {
@@ -58,124 +206,159 @@ impl TileCache {
 			.collect();
 
 		let (width, height) = Self::get_resolution(&lods, &metadata);
-		let delta_lat = LatLon {
-			lat: range.vertical_degrees() / 2.0,
-			lon: range.horizontal_degrees(mode) / 2.0,
-		};
-		let min_pos = position - delta_lat;
-		let max_pos = position + delta_lat;
-		let meta = &metadata[lods[range as usize]];
+		let (atlas, view) = Self::make_atlas(device, width, height);
 
-		let res = meta.metadata.resolution as u32;
-		let slots_per_row = width / res;
+		Ok(Self {
+			metadata,
+			lods,
+			atlas,
+			view,
+			width,
+			height,
+			curr_tile_res: 0,
+			curr_offset: TileOffset::default(),
+			collected_tiles: Vec::new(),
+			tried_gc: false,
+		})
+	}
 
-		let mut curr = 0;
-		let mut atlas_data = vec![0; (width * height) as usize];
-		let mut tile_map_data = vec![(width, height); 360 * 180];
+	fn needs_clear(&mut self, range: Range) -> bool {
+		self.tried_gc = false;
+		let res = self.metadata[self.lods[range as usize]].metadata.resolution;
+		let ret = res != self.curr_tile_res;
+		self.curr_tile_res = res;
+		ret
+	}
 
-		for lat in min_pos.lat.floor() as i16..=max_pos.lat.floor() as i16 {
-			for lon in min_pos.lon.floor() as i16..=max_pos.lon.floor() as i16 {
-				let mut path = meta.dir.clone();
-				GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
-				let tile = match GeoTile::load(&meta.metadata, &path) {
-					Ok(tile) => tile,
-					Err(e) => match e {
-						LoadError::Io(_) => continue,
-						x => return Err(x),
-					},
-				};
+	fn clear(&mut self) {
+		self.collected_tiles.clear();
+		self.curr_offset = TileOffset::default();
+	}
 
-				let row = curr / slots_per_row;
-				let col = curr - row * slots_per_row;
-
-				let offset_w = col as u32 * res;
-				let offset_h = row as u32 * res;
-
-				let data = tile.expand(&meta.metadata);
-				Self::copy_tile(&mut atlas_data, &data, (offset_w, offset_h), width, res);
-				curr += 1;
-
-				tile_map_data[Self::get_index_for_lat_lon(lat, lon)] = (col as u32 * res, row as u32 * res);
+	fn upload_tile(
+		&mut self, device: &Device, queue: &Queue, tile: &[i16], tiles_used: &[u32], tile_offsets: &mut [TileOffset],
+	) -> Option<TileOffset> {
+		let ret = if let Some(tile) = self.collected_tiles.pop() {
+			tile
+		} else {
+			let ret = self.curr_offset;
+			if ret.y + (self.curr_tile_res as u32) > self.height {
+				if self.tried_gc {
+					self.recreate_atlas(device);
+					return None;
+				}
+				self.tried_gc = true;
+				if !self.gc_tiles(tiles_used, tile_offsets) {
+					self.recreate_atlas(device);
+					return None;
+				} else {
+					self.collected_tiles.pop().unwrap()
+				}
+			} else {
+				ret
 			}
+		};
+
+		queue.write_texture(
+			ImageCopyTexture {
+				texture: &self.atlas,
+				mip_level: 0,
+				origin: Origin3d {
+					x: ret.x as _,
+					y: ret.y as _,
+					z: 0,
+				},
+				aspect: TextureAspect::All,
+			},
+			unsafe { std::slice::from_raw_parts(tile.as_ptr() as _, tile.len() * 2) },
+			ImageDataLayout {
+				offset: 0,
+				bytes_per_row: Some(NonZeroU32::new(2 * self.curr_tile_res as u32).unwrap()),
+				rows_per_image: Some(NonZeroU32::new(self.curr_tile_res as u32).unwrap()),
+			},
+			Extent3d {
+				width: self.curr_tile_res as _,
+				height: self.curr_tile_res as _,
+				depth_or_array_layers: 1,
+			},
+		);
+
+		self.curr_offset.x += self.curr_tile_res as u32;
+		if self.curr_offset.x >= self.width {
+			self.curr_offset.x = 0;
+			self.curr_offset.y += self.curr_tile_res as u32;
 		}
 
-		let atlas = device.create_texture_with_data(
-			queue,
-			&TextureDescriptor {
-				label: Some("Heightmap Atlas"),
-				size: Extent3d {
-					width,
-					height,
-					depth_or_array_layers: 1,
-				},
-				mip_level_count: 1,
-				sample_count: 1,
-				dimension: TextureDimension::D2,
-				format: TextureFormat::R16Sint,
-				usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+		Some(ret)
+	}
+
+	fn gc_tiles(&mut self, tiles_used: &[u32], tile_offsets: &mut [TileOffset]) -> bool {
+		println!("Triggered GC");
+		let mut reclaimed = false;
+		for (used, offset) in tiles_used.iter().zip(tile_offsets.iter_mut()) {
+			if *used == 0 && *offset != self.unloaded() && *offset != self.not_found() {
+				self.collected_tiles.push(*offset);
+				*offset = self.unloaded();
+				reclaimed = true;
+			}
+		}
+		reclaimed
+	}
+
+	fn recreate_atlas(&mut self, device: &Device) {
+		println!("Triggered recreation");
+
+		let limits = device.limits();
+		if self.width == limits.max_texture_dimension_2d && self.height == limits.max_texture_dimension_2d {
+			panic!("Atlas is already the maximum size");
+		}
+
+		let width = (self.width * 2).min(limits.max_texture_dimension_2d);
+		let height = (self.height * 2).min(limits.max_texture_dimension_2d);
+		let (atlas, view) = Self::make_atlas(device, width, height);
+
+		self.atlas = atlas;
+		self.view = view;
+		self.width = width;
+		self.height = height;
+		self.curr_tile_res = 0;
+	}
+
+	fn make_atlas(device: &Device, width: u32, height: u32) -> (Texture, TextureView) {
+		let atlas = device.create_texture(&TextureDescriptor {
+			label: Some("Heightmap Atlas"),
+			size: Extent3d {
+				width,
+				height,
+				depth_or_array_layers: 1,
 			},
-			unsafe { std::slice::from_raw_parts(atlas_data.as_ptr() as _, atlas_data.len() * 2) },
-		);
-		let atlas_view = atlas.create_view(&TextureViewDescriptor {
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: TextureDimension::D2,
+			format: TextureFormat::R16Sint,
+			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+		});
+		let view = atlas.create_view(&TextureViewDescriptor {
 			label: Some("Heightmap Atlas View"),
 			..Default::default()
 		});
 
-		let tile_map = device.create_texture_with_data(
-			queue,
-			&TextureDescriptor {
-				label: Some("Tile Map"),
-				size: Extent3d {
-					width: 360,
-					height: 180,
-					depth_or_array_layers: 1,
-				},
-				mip_level_count: 1,
-				sample_count: 1,
-				dimension: TextureDimension::D2,
-				format: TextureFormat::Rg32Uint,
-				usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-			},
-			unsafe { std::slice::from_raw_parts(tile_map_data.as_ptr() as _, tile_map_data.len() * 8) },
-		);
-		let tile_map_view = tile_map.create_view(&TextureViewDescriptor {
-			label: Some("Tile Map View"),
-			..Default::default()
-		});
-
-		Ok(Self {
-			position,
-			range,
-			metadata,
-			lods,
-			tile_map,
-			tile_map_view,
-			atlas,
-			atlas_view,
-			width,
-			height,
-		})
+		(atlas, view)
 	}
 
-	// pub fn metadata(&self, lod: usize) -> &TileMetadata { &self.metadata[lod].metadata }
+	fn unloaded(&self) -> TileOffset { TileOffset { x: 0, y: self.height } }
 
-	pub fn tile_map(&self) -> &TextureView { &self.tile_map_view }
+	fn not_found(&self) -> TileOffset { TileOffset { x: self.width, y: 0 } }
 
-	pub fn atlas(&self) -> &TextureView { &self.atlas_view }
-
-	pub fn tile_size_for_range(&self, range: Range) -> u32 {
-		self.metadata[self.lods[range as usize]].metadata.resolution as _
-	}
-
-	pub fn atlas_resolution(&self) -> (u32, u32) { (self.width, self.height) }
-
-	fn copy_tile(dest: &mut [i16], tile: &[i16], (offset_x, offset_y): (u32, u32), dest_row: u32, tile_row: u32) {
-		let start = (offset_y * dest_row + offset_x) as usize;
-		let dest = &mut dest[start..];
-		for (i, row) in tile.chunks_exact(tile_row as _).enumerate() {
-			let start = dest_row as usize * i;
-			dest[start..start + tile_row as usize].copy_from_slice(row);
+	fn get_lod_for_range(vertical_angle: f32, metadata: &[Metadata]) -> usize {
+		for (lod, meta) in metadata.iter().enumerate().rev() {
+			let pixels_on_screen = meta.metadata.resolution as f32 * vertical_angle;
+			if pixels_on_screen >= 1100.0 {
+				return lod;
+			}
 		}
+
+		0
 	}
 
 	fn get_resolution(lods: &[usize], metadata: &[Metadata]) -> (u32, u32) {
@@ -194,22 +377,5 @@ impl TileCache {
 				* metadata[lods[max_range as usize]].metadata.resolution as u32,
 			max_resolution as u32,
 		)
-	}
-
-	fn get_lod_for_range(vertical_angle: f32, metadata: &[Metadata]) -> usize {
-		for (lod, meta) in metadata.iter().enumerate().rev() {
-			let pixels_on_screen = meta.metadata.resolution as f32 * vertical_angle;
-			if pixels_on_screen >= 1040.0 {
-				return lod;
-			}
-		}
-
-		0
-	}
-
-	fn get_index_for_lat_lon(lat: i16, lon: i16) -> usize {
-		let lat = lat + 90;
-		let lon = lon + 180;
-		lat as usize * 360 + lon as usize
 	}
 }

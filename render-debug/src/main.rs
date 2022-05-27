@@ -8,7 +8,6 @@ use tracing_subscriber::prelude::*;
 use tracy::{tracing::TracyLayer, wgpu::ProfileContext};
 use wgpu::{
 	Backends,
-	Color,
 	CommandEncoderDescriptor,
 	DeviceDescriptor,
 	Features,
@@ -45,7 +44,7 @@ fn main() {
 		.with_visible(false)
 		.with_inner_size(PhysicalSize {
 			width: 1480,
-			height: 1040,
+			height: 1100,
 		})
 		.with_resizable(false)
 		.build(&event_loop)
@@ -119,22 +118,7 @@ fn main() {
 
 				let context = platform.context();
 				{
-					let mut pass = tracy::wgpu_render_pass!(
-						encoder,
-						RenderPassDescriptor {
-							label: Some("Map Render"),
-							color_attachments: &[RenderPassColorAttachment {
-								view: &view,
-								resolve_target: None,
-								ops: Operations {
-									load: LoadOp::Clear(Color::BLACK),
-									store: true,
-								}
-							}],
-							depth_stencil_attachment: None,
-						}
-					);
-					ui.update(&context, &mut pass, &device, &queue, config.format);
+					ui.update(&context, &device, &queue, &mut encoder, &view, config.format);
 				}
 
 				let (screen_descriptor, tesselated) = {

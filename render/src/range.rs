@@ -57,16 +57,16 @@ impl Range {
 	pub fn horizontal_degrees(self, mode: Mode) -> f32 {
 		self.vertical_degrees()
 			* match mode {
-				Mode::HalfPage => 0.71153846153,
-				Mode::FullPage => 1.42307692308,
+				Mode::HalfPage => 0.67272727272,
+				Mode::FullPage => 1.34545454545,
 			}
 	}
 
 	pub fn horizontal_radians(self, mode: Mode) -> f32 {
 		self.vertical_radians()
 			* match mode {
-				Mode::HalfPage => 0.71153846153,
-				Mode::FullPage => 1.42307692308,
+				Mode::HalfPage => 0.67272727272,
+				Mode::FullPage => 1.34545454545,
 			}
 	}
 
