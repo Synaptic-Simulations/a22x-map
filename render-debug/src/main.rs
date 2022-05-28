@@ -10,6 +10,7 @@ use wgpu::{
 	Backends,
 	CommandEncoderDescriptor,
 	DeviceDescriptor,
+	Extent3d,
 	Features,
 	Instance,
 	LoadOp,
@@ -21,6 +22,9 @@ use wgpu::{
 	RenderPassDescriptor,
 	RequestAdapterOptions,
 	SurfaceConfiguration,
+	TextureDescriptor,
+	TextureDimension,
+	TextureFormat,
 	TextureUsages,
 };
 use winit::{
@@ -30,8 +34,9 @@ use winit::{
 	window::WindowBuilder,
 };
 
-use crate::ui::Ui;
+use crate::{blit::Blitter, ui::Ui};
 
+mod blit;
 mod ui;
 
 fn main() {
@@ -82,6 +87,22 @@ fn main() {
 	};
 	surface.configure(&device, &config);
 
+	let map = device.create_texture(&TextureDescriptor {
+		label: Some("Map"),
+		size: Extent3d {
+			width: config.width / 2,
+			height: config.height / 2,
+			depth_or_array_layers: 1,
+		},
+		mip_level_count: 1,
+		sample_count: 1,
+		dimension: TextureDimension::D2,
+		format: TextureFormat::Rgba8Unorm,
+		usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+	});
+	let map_view = map.create_view(&Default::default());
+	let blitter = Blitter::new(&device, &map_view, config.format);
+
 	let mut platform = Platform::new(PlatformDescriptor {
 		physical_width: size.width,
 		physical_height: size.height,
@@ -118,7 +139,16 @@ fn main() {
 
 				let context = platform.context();
 				{
-					ui.update(&context, &device, &queue, &mut encoder, &view, config.format);
+					ui.update(
+						&context,
+						&device,
+						&queue,
+						&mut encoder,
+						&map_view,
+						TextureFormat::Rgba8Unorm,
+						(config.width / 2, config.height / 2),
+					);
+					blitter.blit(&mut encoder, &view);
 				}
 
 				let (screen_descriptor, tesselated) = {

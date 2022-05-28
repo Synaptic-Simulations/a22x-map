@@ -1,11 +1,9 @@
-use std::{
-	ops::{Add, DerefMut, Sub},
-	path::PathBuf,
-};
+use std::path::PathBuf;
 
 use geo::LoadError;
 use wgpu::{
 	include_spirv,
+	AddressMode,
 	BindGroup,
 	BindGroupDescriptor,
 	BindGroupEntry,
@@ -15,32 +13,40 @@ use wgpu::{
 	BindingResource,
 	BindingType,
 	Buffer,
-	BufferBinding,
 	BufferBindingType,
 	BufferDescriptor,
 	BufferUsages,
+	Color,
 	ColorTargetState,
 	CommandEncoder,
 	Device,
+	Extent3d,
+	FilterMode,
 	FragmentState,
+	LoadOp,
+	Operations,
 	PipelineLayoutDescriptor,
 	PrimitiveState,
 	PrimitiveTopology,
 	Queue,
-	RenderPass,
+	RenderPassColorAttachment,
+	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
+	SamplerBindingType,
+	SamplerDescriptor,
 	ShaderStages,
+	TextureDescriptor,
+	TextureDimension,
 	TextureFormat,
 	TextureSampleType,
+	TextureUsages,
+	TextureView,
 	TextureViewDimension,
 	VertexState,
 };
 
-use crate::{
-	range::{Mode, Range},
-	tile_cache::TileCache,
-};
+use crate::{range::Range, tile_cache::TileCache};
 
 pub mod range;
 mod tile_cache;
@@ -52,80 +58,72 @@ pub struct LatLon {
 	pub lon: f32,
 }
 
-impl LatLon {
-	pub fn ceil(self) -> Self {
-		LatLon {
-			lat: self.lat.ceil(),
-			lon: self.lon.ceil(),
-		}
-	}
-
-	pub fn floor(self) -> Self {
-		LatLon {
-			lat: self.lat.floor(),
-			lon: self.lon.floor(),
-		}
-	}
+pub struct RendererOptions {
+	pub data_path: PathBuf,
+	pub width: u32,
+	pub height: u32,
+	pub output_format: TextureFormat,
 }
 
-impl Add for LatLon {
-	type Output = LatLon;
-
-	fn add(self, other: LatLon) -> LatLon {
-		LatLon {
-			lat: self.lat + other.lat,
-			lon: self.lon + other.lon,
-		}
-	}
+pub struct FrameOptions {
+	pub position: LatLon,
+	pub range: Range,
+	pub heading: f32,
+	pub sun_azimuth: f32,
+	pub sun_elevation: f32,
+	pub altitude: f32,
 }
 
-impl Sub for LatLon {
-	type Output = LatLon;
-
-	fn sub(self, other: LatLon) -> LatLon {
-		LatLon {
-			lat: self.lat - other.lat,
-			lon: self.lon - other.lon,
+impl Default for FrameOptions {
+	fn default() -> Self {
+		FrameOptions {
+			position: LatLon { lat: 0.0, lon: 0.0 },
+			range: Range::Nm40,
+			heading: 0.,
+			sun_azimuth: 315.,
+			sun_elevation: 45.,
+			altitude: 10000.,
 		}
 	}
 }
 
 pub struct Renderer {
-	pipeline: RenderPipeline,
-	group: BindGroup,
-	group_layout: BindGroupLayout,
-	cbuffer: Buffer,
 	cache: TileCache,
-	// view: TextureView,
+	cbuffer: Buffer,
+	aspect_ratio: f32,
+	heightmap: TextureView,
+	heightmap_layout: BindGroupLayout,
+	heightmap_pipeline: RenderPipeline,
+	heightmap_group: BindGroup,
+	final_pipeline: RenderPipeline,
+	final_group: BindGroup,
 }
 
 impl Renderer {
-	pub fn new(device: &Device, format: TextureFormat, data_path: PathBuf) -> Result<Self, LoadError> {
-		let sets = std::fs::read_to_string(data_path.join("_meta"))?;
-		let datasets = sets.lines().map(|line| data_path.join(line)).collect();
-		let cache = TileCache::new(device, datasets)?;
+	const HEIGHTMAP_FORMAT: TextureFormat = TextureFormat::Rgba16Float;
 
-		// let format = TextureFormat::R32Float;
-		// let tex = device.create_texture(&TextureDescriptor {
-		// 	label: None,
-		// 	size: Extent3d {
-		// 		width: 1480,
-		// 		height: 1100,
-		// 		depth_or_array_layers: 1,
-		// 	},
-		// 	mip_level_count: 1,
-		// 	sample_count: 1,
-		// 	dimension: TextureDimension::D2,
-		// 	format,
-		// 	usage: TextureUsages::RENDER_ATTACHMENT,
-		// });
-		// let view = tex.create_view(&Default::default());
+	pub fn new(device: &Device, options: &RendererOptions) -> Result<Self, LoadError> {
+		let aspect_ratio = options.width as f32 / options.height as f32;
+
+		let sets = std::fs::read_to_string(options.data_path.join("_meta"))?;
+		let datasets = sets.lines().map(|line| options.data_path.join(line)).collect();
+		let cache = TileCache::new(device, aspect_ratio, datasets)?;
+
+		let cbuffer = device.create_buffer(&BufferDescriptor {
+			label: Some("Map Render Constant Buffer"),
+			size: 48,
+			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
+			mapped_at_creation: false,
+		});
 
 		let vertex = device.create_shader_module(&include_spirv!(env!("FullscreenVS.hlsl")));
-		let fragment = device.create_shader_module(&include_spirv!(env!("RenderPS.hlsl")));
+		let heightmap_fragment = device.create_shader_module(&include_spirv!(env!("HeightmapPS.hlsl")));
+		let final_fragment = device.create_shader_module(&include_spirv!(env!("FinalPS.hlsl")));
 
-		let group_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-			label: Some("Map Render Bind Group"),
+		let heightmap = Self::make_heightmap(device, options.width, options.height);
+
+		let heightmap_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+			label: Some("Heightmap Bind Group"),
 			entries: &[
 				BindGroupLayoutEntry {
 					binding: 0,
@@ -170,11 +168,11 @@ impl Renderer {
 			],
 		});
 
-		let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-			label: Some("Map Render Pipeline"),
+		let heightmap_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+			label: Some("Heightmap Pipeline"),
 			layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-				label: Some("Map Render Pipeline Layout"),
-				bind_group_layouts: &[&group_layout],
+				label: Some("Heightmap Pipeline Layout"),
+				bind_group_layouts: &[&heightmap_layout],
 				push_constant_ranges: &[],
 			})),
 			vertex: VertexState {
@@ -189,88 +187,201 @@ impl Renderer {
 			depth_stencil: None,
 			multisample: Default::default(),
 			fragment: Some(FragmentState {
-				module: &fragment,
+				module: &heightmap_fragment,
 				entry_point: "Main",
-				targets: &[ColorTargetState::from(format)],
+				targets: &[ColorTargetState::from(Self::HEIGHTMAP_FORMAT)],
 			}),
 			multiview: None,
 		});
 
-		let cbuffer = device.create_buffer(&BufferDescriptor {
-			label: Some("Map Render Constant Buffer"),
-			size: 48,
-			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-			mapped_at_creation: false,
+		let heightmap_group = Self::make_heightmap_bind_group(device, &heightmap_layout, &cbuffer, &cache);
+
+		let final_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+			label: Some("Final Bind Group"),
+			entries: &[
+				BindGroupLayoutEntry {
+					binding: 0,
+					visibility: ShaderStages::FRAGMENT,
+					ty: BindingType::Buffer {
+						ty: BufferBindingType::Uniform,
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+					count: None,
+				},
+				BindGroupLayoutEntry {
+					binding: 1,
+					visibility: ShaderStages::FRAGMENT,
+					ty: BindingType::Sampler(SamplerBindingType::Filtering),
+					count: None,
+				},
+				BindGroupLayoutEntry {
+					binding: 2,
+					visibility: ShaderStages::FRAGMENT,
+					ty: BindingType::Texture {
+						sample_type: TextureSampleType::Float { filterable: true },
+						view_dimension: TextureViewDimension::D2,
+						multisampled: false,
+					},
+					count: None,
+				},
+			],
 		});
 
-		let group = Self::make_bind_group(device, &group_layout, &cbuffer, &cache);
+		let final_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+			label: Some("Final Pipeline"),
+			layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
+				label: Some("Final Pipeline Layout"),
+				bind_group_layouts: &[&final_layout],
+				push_constant_ranges: &[],
+			})),
+			vertex: VertexState {
+				module: &vertex,
+				entry_point: "Main",
+				buffers: &[],
+			},
+			primitive: PrimitiveState {
+				topology: PrimitiveTopology::TriangleList,
+				..Default::default()
+			},
+			depth_stencil: None,
+			multisample: Default::default(),
+			fragment: Some(FragmentState {
+				module: &final_fragment,
+				entry_point: "Main",
+				targets: &[ColorTargetState::from(options.output_format)],
+			}),
+			multiview: None,
+		});
+
+		let final_group = device.create_bind_group(&BindGroupDescriptor {
+			label: Some("Final Bind Group"),
+			layout: &final_layout,
+			entries: &[
+				BindGroupEntry {
+					binding: 0,
+					resource: cbuffer.as_entire_binding(),
+				},
+				BindGroupEntry {
+					binding: 1,
+					resource: BindingResource::Sampler(&device.create_sampler(&SamplerDescriptor {
+						label: Some("Final Sampler"),
+						address_mode_u: AddressMode::ClampToEdge,
+						address_mode_v: AddressMode::ClampToEdge,
+						address_mode_w: AddressMode::ClampToEdge,
+						mag_filter: FilterMode::Linear,
+						min_filter: FilterMode::Linear,
+						mipmap_filter: FilterMode::Linear,
+						lod_min_clamp: 0.,
+						lod_max_clamp: 0.,
+						compare: None,
+						anisotropy_clamp: None,
+						border_color: None,
+					})),
+				},
+				BindGroupEntry {
+					binding: 2,
+					resource: BindingResource::TextureView(&heightmap),
+				},
+			],
+		});
 
 		Ok(Self {
-			pipeline,
-			group,
-			group_layout,
-			cbuffer,
 			cache,
-			// view,
+			cbuffer,
+			aspect_ratio,
+			heightmap,
+			heightmap_pipeline,
+			heightmap_group,
+			heightmap_layout,
+			final_pipeline,
+			final_group,
 		})
 	}
 
-	pub fn render<'a, T: DerefMut<Target = CommandEncoder>, U: DerefMut<Target = RenderPass<'a>>>(
-		&'a mut self, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, aircraft_altitude: f32,
-		mode: Mode, device: &Device, queue: &Queue, encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
+	pub fn render(
+		&mut self, options: &FrameOptions, device: &Device, queue: &Queue, view: &TextureView,
+		encoder: &mut CommandEncoder,
 	) {
 		encoder.clear_buffer(self.cache.tile_status(), 0, None);
 		queue.write_buffer(
 			&self.cbuffer,
 			0,
-			&Self::get_cbuffer_data(
-				&self.cache,
-				pos,
-				range,
-				heading,
-				azimuth,
-				altitude,
-				aircraft_altitude,
-				mode,
-			),
+			&Self::get_cbuffer_data(&self.cache, self.aspect_ratio, options),
 		);
 
-		if self.cache.populate_tiles(device, queue, range) {
-			self.group = Self::make_bind_group(device, &self.group_layout, &self.cbuffer, &self.cache);
-		}
-
 		{
-			let mut pass = pass(encoder);
-			// let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-			// 	label: None,
-			// 	color_attachments: &[RenderPassColorAttachment {
-			// 		view: &self.view,
-			// 		resolve_target: None,
-			// 		ops: Operations {
-			// 			load: LoadOp::Clear(Color::BLACK),
-			// 			store: true,
-			// 		},
-			// 	}],
-			// 	depth_stencil_attachment: None,
-			// });
-			pass.set_pipeline(&self.pipeline);
-			pass.set_bind_group(0, &self.group, &[]);
+			let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+				label: Some("Heightmap Pass"),
+				color_attachments: &[RenderPassColorAttachment {
+					view: &self.heightmap,
+					resolve_target: None,
+					ops: Operations {
+						load: LoadOp::Clear(Color::BLACK),
+						store: true,
+					},
+				}],
+				depth_stencil_attachment: None,
+			});
+			pass.set_pipeline(&self.heightmap_pipeline);
+			pass.set_bind_group(0, &self.heightmap_group, &[]);
 			pass.draw(0..3, 0..1);
 		}
+
+		if self.cache.populate_tiles(device, queue, options.range) {
+			self.heightmap_group =
+				Self::make_heightmap_bind_group(device, &self.heightmap_layout, &self.cbuffer, &self.cache);
+		}
+
+		let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+			label: Some("Final Pass"),
+			color_attachments: &[RenderPassColorAttachment {
+				view,
+				resolve_target: None,
+				ops: Operations {
+					load: LoadOp::Clear(Color::BLACK),
+					store: true,
+				},
+			}],
+			depth_stencil_attachment: None,
+		});
+		pass.set_pipeline(&self.final_pipeline);
+		pass.set_bind_group(0, &self.final_group, &[]);
+		pass.draw(0..3, 0..1);
 	}
 
-	fn make_bind_group(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache) -> BindGroup {
+	pub fn resize(&mut self, device: &Device, width: u32, height: u32) {
+		self.aspect_ratio = width as f32 / height as f32;
+		self.heightmap = Self::make_heightmap(device, width, height);
+	}
+
+	fn make_heightmap(device: &Device, width: u32, height: u32) -> TextureView {
+		let tex = device.create_texture(&TextureDescriptor {
+			label: Some("Heightmap"),
+			size: Extent3d {
+				width,
+				height,
+				depth_or_array_layers: 1,
+			},
+			mip_level_count: 1,
+			sample_count: 1,
+			dimension: TextureDimension::D2,
+			format: Self::HEIGHTMAP_FORMAT,
+			usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+		});
+		tex.create_view(&Default::default())
+	}
+
+	fn make_heightmap_bind_group(
+		device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache,
+	) -> BindGroup {
 		device.create_bind_group(&BindGroupDescriptor {
-			label: Some("Map Render Bind Group"),
+			label: Some("Heightmap Bind Group"),
 			layout,
 			entries: &[
 				BindGroupEntry {
 					binding: 0,
-					resource: BindingResource::Buffer(BufferBinding {
-						buffer: &cbuffer,
-						offset: 0,
-						size: None,
-					}),
+					resource: cbuffer.as_entire_binding(),
 				},
 				BindGroupEntry {
 					binding: 1,
@@ -278,11 +389,7 @@ impl Renderer {
 				},
 				BindGroupEntry {
 					binding: 2,
-					resource: BindingResource::Buffer(BufferBinding {
-						buffer: cache.tile_status(),
-						offset: 0,
-						size: None,
-					}),
+					resource: cache.tile_status().as_entire_binding(),
 				},
 				BindGroupEntry {
 					binding: 3,
@@ -292,26 +399,23 @@ impl Renderer {
 		})
 	}
 
-	fn get_cbuffer_data(
-		cache: &TileCache, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32,
-		aircraft_altitude: f32, mode: Mode,
-	) -> [u8; 48] {
+	fn get_cbuffer_data(cache: &TileCache, aspect_ratio: f32, options: &FrameOptions) -> [u8; 48] {
 		let mut data = [0; 48];
 
-		data[0..4].copy_from_slice(&pos.lat.to_radians().to_le_bytes());
-		data[4..8].copy_from_slice(&pos.lon.to_radians().to_le_bytes());
+		data[0..4].copy_from_slice(&options.position.lat.to_radians().to_le_bytes());
+		data[4..8].copy_from_slice(&options.position.lon.to_radians().to_le_bytes());
 
-		data[16..20].copy_from_slice(&range.horizontal_radians(mode).to_le_bytes());
-		data[20..24].copy_from_slice(&range.vertical_radians().to_le_bytes());
-		data[24..28].copy_from_slice(&cache.tile_size_for_range(range).to_le_bytes());
-		data[28..32].copy_from_slice(&(360. - heading).to_radians().to_le_bytes());
-		data[32..36].copy_from_slice(&(90. - altitude).to_radians().to_le_bytes());
-		let mut azimuth = 360. - azimuth + 90.;
+		data[16..20].copy_from_slice(&options.range.vertical_radians().to_le_bytes());
+		data[20..24].copy_from_slice(&aspect_ratio.to_le_bytes());
+		data[24..28].copy_from_slice(&cache.tile_size_for_range(options.range).to_le_bytes());
+		data[28..32].copy_from_slice(&(360. - options.heading).to_radians().to_le_bytes());
+		data[32..36].copy_from_slice(&(90. - options.sun_elevation).to_radians().to_le_bytes());
+		let mut azimuth = 360. - options.sun_azimuth + 90.;
 		if azimuth >= 360. {
 			azimuth -= 360.;
 		}
 		data[36..40].copy_from_slice(&azimuth.to_radians().to_le_bytes());
-		data[40..44].copy_from_slice(&aircraft_altitude.to_le_bytes());
+		data[40..44].copy_from_slice(&options.altitude.to_le_bytes());
 
 		data
 	}

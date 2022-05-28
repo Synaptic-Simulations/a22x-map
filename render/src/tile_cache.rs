@@ -23,7 +23,7 @@ use wgpu::{
 };
 
 use crate::{
-	range::{Mode, Range, RANGES, RANGE_TO_DEGREES},
+	range::{Range, RANGES, RANGE_TO_DEGREES},
 	TextureFormat,
 };
 
@@ -48,7 +48,7 @@ pub struct TileCache {
 }
 
 impl TileCache {
-	pub fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
+	pub fn new(device: &Device, aspect_ratio: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
 		let tile_map = device.create_texture(&TextureDescriptor {
 			label: Some("Tile Map"),
 			size: Extent3d {
@@ -74,7 +74,7 @@ impl TileCache {
 			mapped_at_creation: false,
 		});
 
-		let atlas = Atlas::new(device, datasets)?;
+		let atlas = Atlas::new(device, aspect_ratio, datasets)?;
 
 		Ok(Self {
 			tile_map,
@@ -189,7 +189,7 @@ struct Atlas {
 }
 
 impl Atlas {
-	fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
+	fn new(device: &Device, aspect_ratio: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
 		let metadata: Result<Vec<_>, std::io::Error> = datasets
 			.into_iter()
 			.map(|dir| {
@@ -205,7 +205,7 @@ impl Atlas {
 			.map(|&angle| Self::get_lod_for_range(angle, &metadata))
 			.collect();
 
-		let (width, height) = Self::get_resolution(&lods, &metadata);
+		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &metadata);
 		let (atlas, view) = Self::make_atlas(device, width, height);
 
 		Ok(Self {
@@ -358,21 +358,13 @@ impl Atlas {
 		0
 	}
 
-	fn get_resolution(lods: &[usize], metadata: &[Metadata]) -> (u32, u32) {
+	fn get_resolution(aspect_ratio: f32, lods: &[usize], metadata: &[Metadata]) -> (u32, u32) {
 		let mut max_resolution = 0;
-		let mut max_range = Range::Nm2;
 		for (&lod, &range) in lods.iter().zip(RANGES.iter()) {
 			let resolution = range.vertical_tiles_loaded() * metadata[lod].metadata.resolution as u32;
-			if resolution > max_resolution {
-				max_resolution = resolution;
-				max_range = range;
-			}
+			max_resolution = max_resolution.max(resolution);
 		}
 
-		(
-			max_range.horizontal_tiles_loaded(Mode::FullPage)
-				* metadata[lods[max_range as usize]].metadata.resolution as u32,
-			max_resolution as u32,
-		)
+		((max_resolution as f32 * aspect_ratio) as u32, max_resolution)
 	}
 }

@@ -54,25 +54,7 @@ impl Range {
 
 	pub fn vertical_radians(self) -> f32 { RANGE_TO_RADIANS[self as usize] }
 
-	pub fn horizontal_degrees(self, mode: Mode) -> f32 {
-		self.vertical_degrees()
-			* match mode {
-				Mode::HalfPage => 0.67272727272,
-				Mode::FullPage => 1.34545454545,
-			}
-	}
-
-	pub fn horizontal_radians(self, mode: Mode) -> f32 {
-		self.vertical_radians()
-			* match mode {
-				Mode::HalfPage => 0.67272727272,
-				Mode::FullPage => 1.34545454545,
-			}
-	}
-
 	pub fn vertical_tiles_loaded(self) -> u32 { self.vertical_degrees().ceil() as u32 + 1 }
-
-	pub fn horizontal_tiles_loaded(self, mode: Mode) -> u32 { self.horizontal_degrees(mode).ceil() as u32 + 1 }
 
 	pub fn to_str(self) -> &'static str {
 		match self {
@@ -91,10 +73,4 @@ impl Range {
 
 impl Display for Range {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { write!(f, "{}", self.to_str()) }
-}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Mode {
-	HalfPage,
-	FullPage,
 }
