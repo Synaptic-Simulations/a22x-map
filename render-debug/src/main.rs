@@ -61,7 +61,7 @@ fn main() {
 
 	let (device, queue) = block_on(adapter.request_device(
 		&DeviceDescriptor {
-			label: Some("device"),
+			label: Some("Device"),
 			features: Features::TIMESTAMP_QUERY,
 			limits: Default::default(),
 		},
@@ -122,7 +122,7 @@ fn main() {
 				}
 
 				let (screen_descriptor, tesselated) = {
-					tracy::zone!("UI Generation");
+					tracy::zone!("UI Tesselation");
 
 					let output = platform.end_frame(Some(&window));
 					let screen_descriptor = ScreenDescriptor {

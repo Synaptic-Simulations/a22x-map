@@ -24,6 +24,7 @@ pub struct Ui {
 	heading: f32,
 	azimuth: f32,
 	altitude: f32,
+	aircraft_altitude: f32,
 	renderer: Option<Renderer>,
 }
 
@@ -37,6 +38,7 @@ impl Ui {
 			azimuth: 315.,
 			altitude: 45.,
 			renderer: None,
+			aircraft_altitude: 1000.,
 		}
 	}
 
@@ -114,7 +116,16 @@ impl Ui {
 				ui.add(DragValue::new(&mut self.azimuth).clamp_range(0.0..=360.0).speed(1.0));
 				ui.label("Altitude");
 				ui.add(DragValue::new(&mut self.altitude).clamp_range(0.0..=90.0).speed(1.0));
-			})
+			});
+
+			ui.horizontal(|ui| {
+				ui.label("Aircraft Altitude");
+				ui.add(
+					DragValue::new(&mut self.aircraft_altitude)
+						.clamp_range(0.0..=50000.0)
+						.speed(100.0),
+				);
+			});
 		});
 
 		tracy::zone!("Map Render");
@@ -125,6 +136,7 @@ impl Ui {
 				self.heading,
 				self.azimuth,
 				self.altitude,
+				self.aircraft_altitude,
 				Mode::FullPage,
 				device,
 				queue,

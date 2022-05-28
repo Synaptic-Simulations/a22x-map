@@ -198,7 +198,7 @@ impl Renderer {
 
 		let cbuffer = device.create_buffer(&BufferDescriptor {
 			label: Some("Map Render Constant Buffer"),
-			size: 40,
+			size: 48,
 			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
 			mapped_at_creation: false,
 		});
@@ -216,14 +216,23 @@ impl Renderer {
 	}
 
 	pub fn render<'a, T: DerefMut<Target = CommandEncoder>, U: DerefMut<Target = RenderPass<'a>>>(
-		&'a mut self, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, mode: Mode,
-		device: &Device, queue: &Queue, encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
+		&'a mut self, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, aircraft_altitude: f32,
+		mode: Mode, device: &Device, queue: &Queue, encoder: &'a mut T, pass: impl FnOnce(&'a mut T) -> U,
 	) {
 		encoder.clear_buffer(self.cache.tile_status(), 0, None);
 		queue.write_buffer(
 			&self.cbuffer,
 			0,
-			&Self::get_cbuffer_data(&self.cache, pos, range, heading, azimuth, altitude, mode),
+			&Self::get_cbuffer_data(
+				&self.cache,
+				pos,
+				range,
+				heading,
+				azimuth,
+				altitude,
+				aircraft_altitude,
+				mode,
+			),
 		);
 
 		if self.cache.populate_tiles(device, queue, range) {
@@ -284,9 +293,10 @@ impl Renderer {
 	}
 
 	fn get_cbuffer_data(
-		cache: &TileCache, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32, mode: Mode,
-	) -> [u8; 40] {
-		let mut data = [0; 40];
+		cache: &TileCache, pos: LatLon, range: Range, heading: f32, azimuth: f32, altitude: f32,
+		aircraft_altitude: f32, mode: Mode,
+	) -> [u8; 48] {
+		let mut data = [0; 48];
 
 		data[0..4].copy_from_slice(&pos.lat.to_radians().to_le_bytes());
 		data[4..8].copy_from_slice(&pos.lon.to_radians().to_le_bytes());
@@ -301,6 +311,7 @@ impl Renderer {
 			azimuth -= 360.;
 		}
 		data[36..40].copy_from_slice(&azimuth.to_radians().to_le_bytes());
+		data[40..44].copy_from_slice(&aircraft_altitude.to_le_bytes());
 
 		data
 	}

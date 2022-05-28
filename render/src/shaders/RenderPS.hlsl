@@ -19,6 +19,8 @@
 #define L33000 float3(0.56f, 0.6f, 0.6f)
 #define UNKNOWN_TERRAIN float3(0.41f, 0.15f, 0.42f)
 #define WATER float3(0.06f, 0.24f, 0.41f)
+#define TAWS_YELLOW float3(0.99f, 0.93f, 0.09f)
+#define TAWS_RED float3(0.93f, 0.12f, 0.14f)
 
 #define TILE_USED 1
 
@@ -35,6 +37,7 @@ cbuffer UniformData {
     float Heading; // Radians.
     float Zenith;
     float Azimuth;
+    float Altitude;
 };
 
 [[vk::binding(1)]] Texture2D<uint2> TileMap;
@@ -72,44 +75,50 @@ LatLon Project(float2 UV) {
 
 float3 MapHeightToColor(int height) {
     if (height == -500) {
-        return L500;
-    } else if (height < 500) {
-        return L500;
+        return WATER;
     } else {
-        switch(height / 1000) {
-            case 0: return L1000;
-            case 1: return L2000;
-            case 2: return L3000;
-            case 3: return L4000;
-            case 4: return L5000;
-            case 5: return L6000;
-            case 6: return L7000;
-            case 7: return L8000;
-            case 8: return L9000;
-            case 9: return L10000;
-            case 10: return L11000;
-            case 11: return L12000;
-            case 12: return L13000;
-            case 13: return L15000;
-            case 14: return L15000;
-            case 15: return L17000;
-            case 16: return L17000;
-            case 17: return L19000;
-            case 18: return L19000;
-            case 19: return L21000;
-            case 20: return L21000;
-            case 21: return L33000;
-            case 22: return L33000;
-            case 23: return L33000;
-            case 24: return L33000;
-            case 25: return L33000;
-            case 26: return L33000;
-            case 27: return L33000;
-            case 28: return L33000;
-            case 29: return L33000;
-            case 30: return L33000;
-            case 31: return L33000;
-            case 32: return L33000;     
+        if (height - 2000 > Altitude) {
+            return TAWS_RED;
+        } else if (height > Altitude - 500) {
+            return TAWS_YELLOW;
+        } else if (height < 500) {
+            return L500;
+        } else {
+            switch(height / 1000) {
+                case 0: return L1000;
+                case 1: return L2000;
+                case 2: return L3000;
+                case 3: return L4000;
+                case 4: return L5000;
+                case 5: return L6000;
+                case 6: return L7000;
+                case 7: return L8000;
+                case 8: return L9000;
+                case 9: return L10000;
+                case 10: return L11000;
+                case 11: return L12000;
+                case 12: return L13000;
+                case 13: return L15000;
+                case 14: return L15000;
+                case 15: return L17000;
+                case 16: return L17000;
+                case 17: return L19000;
+                case 18: return L19000;
+                case 19: return L21000;
+                case 20: return L21000;
+                case 21: return L33000;
+                case 22: return L33000;
+                case 23: return L33000;
+                case 24: return L33000;
+                case 25: return L33000;
+                case 26: return L33000;
+                case 27: return L33000;
+                case 28: return L33000;
+                case 29: return L33000;
+                case 30: return L33000;
+                case 31: return L33000;
+                case 32: return L33000;     
+            }
         }
     }
 
