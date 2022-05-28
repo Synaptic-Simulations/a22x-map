@@ -41,9 +41,8 @@ float4 Main(float2 UV: UV): SV_Target0 {
     TileStatus[index] = TILE_USED;
     uint2 tile_offset = TileMap.Load(int3(tile_loc, 0));
 
-    int atlas_width, atlas_height, _;
-    TileAtlas.GetDimensions(0, atlas_width, atlas_height, _);
-    int2 atlas_dimensions = uint2(atlas_width, atlas_height);
+    int3 atlas_dimensions;
+    TileAtlas.GetDimensions(0, atlas_dimensions.x, atlas_dimensions.y, atlas_dimensions.z);
     bool not_found = tile_offset.x == (uint)atlas_dimensions.x;
     bool unloaded = tile_offset.y == (uint)atlas_dimensions.y;
     

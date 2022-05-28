@@ -48,15 +48,15 @@ pub fn downsample(downsample: Downsample) {
 		let mut downsampled = Vec::with_capacity(new_res * new_res);
 		for i in 0..new_res {
 			for j in 0..new_res {
-				let mut sum = 0;
+				let mut sum: i64 = 0;
 				for k in 0..downsample.factor as usize {
 					for l in 0..downsample.factor as usize {
 						sum += data[(i * downsample.factor as usize + k) * metadata.resolution as usize
-							+ (j * downsample.factor as usize + l)];
+							+ (j * downsample.factor as usize + l)] as i64;
 					}
 				}
-				let value = sum as f32 / (downsample.factor * downsample.factor) as f32;
-				downsampled.push(value.round() as _);
+				let value = sum / (downsample.factor * downsample.factor) as i64;
+				downsampled.push(value as i16);
 			}
 		}
 		let meta = TileMetadata {

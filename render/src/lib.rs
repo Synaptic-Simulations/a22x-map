@@ -269,9 +269,9 @@ impl Renderer {
 						address_mode_u: AddressMode::ClampToEdge,
 						address_mode_v: AddressMode::ClampToEdge,
 						address_mode_w: AddressMode::ClampToEdge,
-						mag_filter: FilterMode::Linear,
-						min_filter: FilterMode::Linear,
-						mipmap_filter: FilterMode::Linear,
+						mag_filter: FilterMode::Nearest,
+						min_filter: FilterMode::Nearest,
+						mipmap_filter: FilterMode::Nearest,
 						lod_min_clamp: 0.,
 						lod_max_clamp: 0.,
 						compare: None,
@@ -303,6 +303,11 @@ impl Renderer {
 		&mut self, options: &FrameOptions, device: &Device, queue: &Queue, view: &TextureView,
 		encoder: &mut CommandEncoder,
 	) {
+		if self.cache.populate_tiles(device, queue, options.range) {
+			self.heightmap_group =
+				Self::make_heightmap_bind_group(device, &self.heightmap_layout, &self.cbuffer, &self.cache);
+		}
+
 		encoder.clear_buffer(self.cache.tile_status(), 0, None);
 		queue.write_buffer(
 			&self.cbuffer,
@@ -326,11 +331,6 @@ impl Renderer {
 			pass.set_pipeline(&self.heightmap_pipeline);
 			pass.set_bind_group(0, &self.heightmap_group, &[]);
 			pass.draw(0..3, 0..1);
-		}
-
-		if self.cache.populate_tiles(device, queue, options.range) {
-			self.heightmap_group =
-				Self::make_heightmap_bind_group(device, &self.heightmap_layout, &self.cbuffer, &self.cache);
 		}
 
 		let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {

@@ -28,17 +28,20 @@
 [[vk::binding(2)]] Texture2D Heightmap;
 
 float3 MapHeightToColor(int height) {
-    if (height == -500) {
+    if (height == -600) {
+        return 0.f;
+    } else if (height == -500) {
         return WATER;
     } else {
-        if (height - 2000 > Altitude) {
+        int feet = height * 3.28084f;
+        if (feet - 2000 > Altitude) {
             return TAWS_RED;
-        } else if (height > Altitude - 500) {
+        } else if (feet > Altitude - 500) {
             return TAWS_YELLOW;
-        } else if (height < 500) {
+        } else if (feet < 500) {
             return L500;
         } else {
-            switch(height / 1000) {
+            switch(feet / 1000) {
                 case 0: return L1000;
                 case 1: return L2000;
                 case 2: return L3000;
@@ -80,8 +83,51 @@ float3 MapHeightToColor(int height) {
 }
 
 float4 Main(float2 UV: UV): SV_Target0 {
-    float4 raw = Heightmap.Sample(Sampler, UV);
-    float3 height_color = MapHeightToColor(raw.z);
+    int3 heightmap_dimensions;
+    Heightmap.GetDimensions(0, heightmap_dimensions.x, heightmap_dimensions.y, heightmap_dimensions.z);
+    float2 uvd = 1.f / heightmap_dimensions.xy;
+    float uvdx = uvd.x;
+    float uvdy = uvd.y;
+
+    float4 a = Heightmap.Sample(Sampler, UV - uvd);
+    float4 b = Heightmap.Sample(Sampler, UV + float2(0.f, -uvdy));
+    float4 c = Heightmap.Sample(Sampler, UV + float2(uvdx, -uvdy));
+    float4 d = Heightmap.Sample(Sampler, UV + float2(-uvdx, 0.f));
+    float4 e = Heightmap.Sample(Sampler, UV);
+    float4 f = Heightmap.Sample(Sampler, UV + float2(uvdx, 0.f));
+    float4 g = Heightmap.Sample(Sampler, UV + float2(-uvdx, uvdy));
+    float4 h = Heightmap.Sample(Sampler, UV + float2(0.f, uvdy));
+    float4 i = Heightmap.Sample(Sampler, UV + uvd);
+
+    float2 dr = i.xy - a.xy;
+    float dpdx = dr.x * 6371000.f;
+    float dpdy = dr.y * 6371000.f;
+
+    float dzdx = ((c.z + 2.f * f.z + i.z) - (a.z + 2.f * d.z + g.z)) / (4.f * dpdx);
+    float dzdy = ((g.z + 2.f * h.z + i.z) - (a.z * 2.f * b.z + c.z)) / (4.f * dpdy);
+
+    float slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
+    float aspect = 0.f;
+    if (dzdx != 0.f) {
+        aspect = atan2(dzdy, -dzdx);
+        if (aspect < 0.f) {
+            aspect += 6.28318530718f;
+        }
+    } else {
+        if (dzdy > 0.f) {
+            aspect = 1.57079632679f;
+        } else if (dzdy < 0.f) {
+            aspect = 4.71238898038f;
+        }
+    }
+
+    float zsin, zcos;
+    sincos(Zenith, zsin, zcos);
+    float ssin, scos;
+    sincos(slope, ssin, scos);
+    float hillshade = clamp(zcos * scos + zsin * ssin * cos(Azimuth - aspect), 0.f, 1.f);
+
+    float3 height_color = MapHeightToColor(e.z) * (hillshade * 0.5f + 0.5f);
 
     return float4(pow(height_color, 2.2f), 1.f);
 }

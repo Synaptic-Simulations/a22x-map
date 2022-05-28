@@ -166,6 +166,9 @@ impl GeoTile {
 		let mut data: Vec<_> = data
 			.into_iter()
 			.map(|raw| {
+				if raw < -500 {
+					panic!("Raw height is below -500: {}", raw);
+				}
 				let positive_altitude = raw + 500; // Lowest altitude is -414m.
 				let height = positive_altitude as f32 / metadata.height_resolution as f32;
 				let height = height.round() as u16;
@@ -202,7 +205,7 @@ impl GeoTile {
 
 			let packer = BitPacker8x::new();
 			for (i, chunk) in data.chunks(BitPacker8x::BLOCK_LEN).enumerate() {
-				packer.compress(chunk, &mut out[block_size * i..], bits);
+				packer.compress(chunk, &mut out[3 + block_size * i..], bits);
 			}
 
 			Self { data: out }

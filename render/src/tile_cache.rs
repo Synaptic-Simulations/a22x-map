@@ -87,7 +87,7 @@ impl TileCache {
 
 	pub fn populate_tiles(&mut self, device: &Device, queue: &Queue, range: Range) -> bool {
 		if self.atlas.needs_clear(range) {
-			self.clear();
+			self.clear(range);
 		}
 		let meta = self.atlas.lods[range as usize];
 
@@ -161,11 +161,11 @@ impl TileCache {
 		false
 	}
 
-	pub fn clear(&mut self) {
+	pub fn clear(&mut self, range: Range) {
 		for offset in self.tiles.iter_mut() {
 			*offset = self.atlas.unloaded();
 		}
-		self.atlas.clear();
+		self.atlas.clear(range);
 	}
 
 	pub fn tile_map(&self) -> &TextureView { &self.tile_map_view }
@@ -224,15 +224,15 @@ impl Atlas {
 		})
 	}
 
-	fn needs_clear(&mut self, range: Range) -> bool {
+	fn needs_clear(&self, range: Range) -> bool {
 		let res = self.metadata[self.lods[range as usize]].metadata.resolution;
 		let ret = res != self.curr_tile_res as _;
-		self.curr_tile_res = res as _;
 		ret
 	}
 
-	fn clear(&mut self) {
+	fn clear(&mut self, range: Range) {
 		self.collected_tiles.clear();
+		self.curr_tile_res = self.metadata[self.lods[range as usize]].metadata.resolution as _;
 		self.curr_offset = TileOffset::default();
 	}
 
