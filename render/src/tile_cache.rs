@@ -100,13 +100,18 @@ impl TileCache {
 				for lat in 0..180 {
 					let index = (lat * 360 + lon) as usize;
 					let offset = &mut self.tiles[index];
-					if *offset != self.atlas.unloaded() || used[index] == 0 {
+					if used[index] == 0 {
+						if *offset != self.atlas.unloaded() && *offset != self.atlas.not_found() {
+							self.atlas.return_tile(*offset);
+							*offset = self.atlas.unloaded();
+						}
+						continue;
+					} else if *offset != self.atlas.unloaded() {
 						continue;
 					}
 
 					let lon = lon as i16 - 180;
 					let lat = lat as i16 - 90;
-
 					let metadata = &self.atlas.metadata[meta];
 					let mut path = metadata.dir.clone();
 					GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
@@ -119,14 +124,13 @@ impl TileCache {
 					}
 					.expand(&metadata.metadata);
 
-					let offset =
-						if let Some(offset) = self.atlas.upload_tile(device, queue, &tile, &used, &mut self.tiles) {
-							offset
-						} else {
-							std::mem::drop(buf);
-							self.tile_status.unmap();
-							return true;
-						};
+					let offset = if let Some(offset) = self.atlas.upload_tile(device, queue, &tile) {
+						offset
+					} else {
+						std::mem::drop(buf);
+						self.tile_status.unmap();
+						return true;
+					};
 					self.tiles[index] = offset;
 				}
 			}
@@ -182,10 +186,9 @@ struct Atlas {
 	view: TextureView,
 	width: u32,
 	height: u32,
-	curr_tile_res: u16,
+	curr_tile_res: u32,
 	curr_offset: TileOffset,
 	collected_tiles: Vec<TileOffset>,
-	tried_gc: bool,
 }
 
 impl Atlas {
@@ -218,15 +221,13 @@ impl Atlas {
 			curr_tile_res: 0,
 			curr_offset: TileOffset::default(),
 			collected_tiles: Vec::new(),
-			tried_gc: false,
 		})
 	}
 
 	fn needs_clear(&mut self, range: Range) -> bool {
-		self.tried_gc = false;
 		let res = self.metadata[self.lods[range as usize]].metadata.resolution;
-		let ret = res != self.curr_tile_res;
-		self.curr_tile_res = res;
+		let ret = res != self.curr_tile_res as _;
+		self.curr_tile_res = res as _;
 		ret
 	}
 
@@ -235,25 +236,16 @@ impl Atlas {
 		self.curr_offset = TileOffset::default();
 	}
 
-	fn upload_tile(
-		&mut self, device: &Device, queue: &Queue, tile: &[i16], tiles_used: &[u32], tile_offsets: &mut [TileOffset],
-	) -> Option<TileOffset> {
+	pub fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
+
+	fn upload_tile(&mut self, device: &Device, queue: &Queue, tile: &[i16]) -> Option<TileOffset> {
 		let ret = if let Some(tile) = self.collected_tiles.pop() {
 			tile
 		} else {
 			let ret = self.curr_offset;
-			if ret.y + (self.curr_tile_res as u32) > self.height {
-				if self.tried_gc {
-					self.recreate_atlas(device);
-					return None;
-				}
-				self.tried_gc = true;
-				if !self.gc_tiles(tiles_used, tile_offsets) {
-					self.recreate_atlas(device);
-					return None;
-				} else {
-					self.collected_tiles.pop().unwrap()
-				}
+			if ret.y + (self.curr_tile_res) >= self.height {
+				self.recreate_atlas(device);
+				return None;
 			} else {
 				ret
 			}
@@ -273,35 +265,23 @@ impl Atlas {
 			unsafe { std::slice::from_raw_parts(tile.as_ptr() as _, tile.len() * 2) },
 			ImageDataLayout {
 				offset: 0,
-				bytes_per_row: Some(NonZeroU32::new(2 * self.curr_tile_res as u32).unwrap()),
-				rows_per_image: Some(NonZeroU32::new(self.curr_tile_res as u32).unwrap()),
+				bytes_per_row: Some(NonZeroU32::new(2 * self.curr_tile_res).unwrap()),
+				rows_per_image: Some(NonZeroU32::new(self.curr_tile_res).unwrap()),
 			},
 			Extent3d {
-				width: self.curr_tile_res as _,
-				height: self.curr_tile_res as _,
+				width: self.curr_tile_res,
+				height: self.curr_tile_res,
 				depth_or_array_layers: 1,
 			},
 		);
 
-		self.curr_offset.x += self.curr_tile_res as u32;
-		if self.curr_offset.x + self.curr_tile_res as u32 >= self.width {
+		self.curr_offset.x += self.curr_tile_res;
+		if self.curr_offset.x + self.curr_tile_res >= self.width {
 			self.curr_offset.x = 0;
-			self.curr_offset.y += self.curr_tile_res as u32;
+			self.curr_offset.y += self.curr_tile_res;
 		}
 
 		Some(ret)
-	}
-
-	fn gc_tiles(&mut self, tiles_used: &[u32], tile_offsets: &mut [TileOffset]) -> bool {
-		let mut reclaimed = false;
-		for (used, offset) in tiles_used.iter().zip(tile_offsets.iter_mut()) {
-			if *used == 0 && *offset != self.unloaded() && *offset != self.not_found() {
-				self.collected_tiles.push(*offset);
-				*offset = self.unloaded();
-				reclaimed = true;
-			}
-		}
-		reclaimed
 	}
 
 	fn recreate_atlas(&mut self, device: &Device) {
