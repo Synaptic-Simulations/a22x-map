@@ -1,7 +1,7 @@
 use std::io::Cursor;
 
 use tiff::{
-	decoder::{Decoder, DecodingResult},
+	decoder::{Decoder, DecodingResult, Limits},
 	TiffResult,
 };
 
@@ -16,7 +16,7 @@ impl GeoTiff {
 	/// Parse a GeoTIFF file.
 	/// Note that this is only tested against OpenTopography's data, and may not work for anything else.
 	pub fn parse(data: &[u8]) -> TiffResult<Self> {
-		let mut d = Decoder::new(Cursor::new(data))?;
+		let mut d = Decoder::new(Cursor::new(data))?.with_limits(Limits::unlimited());
 		let data = d.read_image()?;
 		let data = match data {
 			DecodingResult::U8(data) => data.into_iter().map(|x| x as i16).collect(),

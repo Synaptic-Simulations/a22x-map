@@ -144,11 +144,14 @@ fn main() {
 						&device,
 						&queue,
 						&mut encoder,
-						&map_view,
-						TextureFormat::Rgba8Unorm,
-						(config.width / 2, config.height / 2),
+						// &map_view,
+						// TextureFormat::Rgba8Unorm,
+						// (config.width / 2, config.height / 2),
+						&view,
+						config.format,
+						(config.width, config.height),
 					);
-					blitter.blit(&mut encoder, &view);
+					// blitter.blit(&mut encoder, &view);
 				}
 
 				let (screen_descriptor, tesselated) = {
