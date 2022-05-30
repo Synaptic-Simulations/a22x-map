@@ -49,7 +49,7 @@ fn main() {
 		.with_visible(false)
 		.with_inner_size(PhysicalSize {
 			width: 1480,
-			height: 1100,
+			height: 800,
 		})
 		.with_resizable(false)
 		.build(&event_loop)
@@ -90,8 +90,8 @@ fn main() {
 	let map = device.create_texture(&TextureDescriptor {
 		label: Some("Map"),
 		size: Extent3d {
-			width: config.width / 2,
-			height: config.height / 2,
+			width: config.width,
+			height: config.height,
 			depth_or_array_layers: 1,
 		},
 		mip_level_count: 1,
@@ -144,14 +144,14 @@ fn main() {
 						&device,
 						&queue,
 						&mut encoder,
-						// &map_view,
-						// TextureFormat::Rgba8Unorm,
-						// (config.width / 2, config.height / 2),
-						&view,
-						config.format,
+						&map_view,
+						TextureFormat::Rgba8Unorm,
 						(config.width, config.height),
+						// &view,
+						// config.format,
+						// (config.width, config.height),
 					);
-					// blitter.blit(&mut encoder, &view);
+					blitter.blit(&mut encoder, &view);
 				}
 
 				let (screen_descriptor, tesselated) = {

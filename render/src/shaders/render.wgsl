@@ -59,6 +59,7 @@ fn project(uv: vec2<f32>) -> LatLon {
     let headsin = sin(uniforms.heading);
     let headcos = cos(uniforms.heading);
     let scaled_uv = vec2<f32>(uv.x * uniforms.aspect_ratio, uv.y);
+    let uv = vec2<f32>(scaled_uv.x * headcos - scaled_uv.y * headsin, scaled_uv.x * headsin + scaled_uv.y * headcos);
     let xy = (uv - vec2<f32>(0.5, 0.5)) * uniforms.vertical_diameter;
 
     let latsin = sin(uniforms.map_center.lat);

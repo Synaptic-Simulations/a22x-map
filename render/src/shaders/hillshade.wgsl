@@ -17,18 +17,10 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] f32 {
     let min = vec3<i32>(uniforms.tile_offset);
     let max = vec3<i32>(uniforms.tile_offset + vec2<u32>(uniforms.tile_size));
 
-    let a = textureLoad(tile_atlas, vec2<i32>(pixel.x - 1, pixel.y - 1), 0).r;
-    let b = textureLoad(tile_atlas, vec2<i32>(pixel.x, pixel.y - 1), 0).r;
-    let c = textureLoad(tile_atlas, vec2<i32>(pixel.x + 1, pixel.y - 1), 0).r;
-    let d = textureLoad(tile_atlas, vec2<i32>(pixel.x - 1, pixel.y), 0).r;
-    let f = textureLoad(tile_atlas, vec2<i32>(pixel.x + 1, pixel.y), 0).r;
-    let g = textureLoad(tile_atlas, vec2<i32>(pixel.x - 1, pixel.y + 1), 0).r;
-    let h = textureLoad(tile_atlas, vec2<i32>(pixel.x, pixel.y + 1), 0).r;
-    let i = textureLoad(tile_atlas, vec2<i32>(pixel.x + 1, pixel.y + 1), 0).r;
+    let value = f32(textureLoad(tile_atlas, pixel, 0).r);
+    let dzdx = dpdx(value);
+    let dzdy = dpdy(value);
 
-    // Sobol
-    let dzdx = f32((c + 2 * f + i) - (a + 2 * d + g));
-    let dzdy = f32((g + 2 * h + i) - (a + 2 * b + c));
     let slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
     var aspect: f32;
     if (dzdx != 0.0) {

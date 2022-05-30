@@ -16,5 +16,14 @@ fn vertex([[builtin(vertex_index)]] id: u32) -> VertexOutput {
 
 [[stage(fragment)]]
 fn pixel(vertex: VertexOutput) -> [[location(0)]] vec4<f32> {
-    return textureSample(tex, s, vertex.uv);
+    let duv = 1.0 / vec2<f32>(textureDimensions(tex, 0));
+
+    var sum: vec4<f32> = vec4<f32>(0.0);
+    for (var x = -2; x <= 2; x = x + 1) {
+        for (var y = -2; y <= 2; y = y + 1) {
+            sum = sum + textureSample(tex, s, vertex.uv + vec2<f32>(f32(x) * duv.x, f32(y) * duv.y));
+        }
+    }
+
+    return sum / 25.0;
 }

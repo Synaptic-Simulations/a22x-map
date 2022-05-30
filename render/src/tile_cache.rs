@@ -6,7 +6,6 @@ use std::{
 use geo::{GeoTile, LoadError, TileMetadata};
 use wgpu::{
 	include_wgsl,
-	AddressMode,
 	BindGroup,
 	BindGroupDescriptor,
 	BindGroupEntry,
@@ -24,7 +23,6 @@ use wgpu::{
 	CommandEncoder,
 	Device,
 	Extent3d,
-	FilterMode,
 	FragmentState,
 	ImageCopyTexture,
 	ImageDataLayout,
@@ -39,9 +37,6 @@ use wgpu::{
 	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
-	Sampler,
-	SamplerBindingType,
-	SamplerDescriptor,
 	ShaderStages,
 	Texture,
 	TextureAspect,
