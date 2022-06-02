@@ -119,12 +119,13 @@ impl TileCache {
 		}
 		let meta = self.atlas.lods[range as usize];
 
+		let mut ret = false;
 		{
 			let _ = self.tile_status.slice(..).map_async(MapMode::Read);
 			device.poll(Maintain::Wait);
 			let buf = self.tile_status.slice(..).get_mapped_range();
 			let used = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u32, buf.len() / 4) };
-			for lon in 0..360 {
+			'outer: for lon in 0..360 {
 				for lat in 0..180 {
 					let index = (lat * 360 + lon) as usize;
 					let offset = &mut self.tiles[index];
@@ -152,14 +153,18 @@ impl TileCache {
 					}
 					.expand(&metadata.metadata);
 
-					let offset = if let Some(offset) = self.atlas.upload_tile(device, encoder, queue, &tile) {
+					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(device, encoder, queue, &tile) {
 						offset
+					} else if self.atlas.collect_tiles(used, &mut self.tiles, index) {
+						self.atlas
+							.upload_tile(device, encoder, queue, &tile)
+							.expect("Tile GC returned None when it had to be Some")
 					} else {
-						std::mem::drop(buf);
-						self.tile_status.unmap();
-						return true;
+						self.atlas.recreate_atlas(device);
+						self.tiles.fill(self.atlas.unloaded());
+						ret = true;
+						break 'outer;
 					};
-					self.tiles[index] = offset;
 				}
 			}
 		}
@@ -186,7 +191,7 @@ impl TileCache {
 			},
 		);
 
-		false
+		ret
 	}
 
 	pub fn clear(&mut self, range: Range) {
@@ -349,7 +354,6 @@ impl Atlas {
 		} else {
 			let ret = self.curr_offset;
 			if ret.y + (self.curr_tile_res) >= self.height {
-				self.recreate_atlas(device);
 				return None;
 			} else {
 				ret
@@ -430,6 +434,24 @@ impl Atlas {
 		}
 
 		Some(ret)
+	}
+
+	fn collect_tiles(&mut self, used: &[u32], tiles: &mut [TileOffset], start: usize) -> bool {
+		let mut needed = 1;
+		let mut collected = 0;
+		for (&used, offset) in used[start + 1..].iter().zip(tiles[start + 1..].iter_mut()) {
+			if used == 1 && *offset == self.unloaded() {
+				needed += 1;
+			} else {
+				if *offset != self.unloaded() && *offset != self.not_found() {
+					self.collected_tiles.push(*offset);
+					*offset = self.unloaded();
+					collected += 1;
+				}
+			}
+		}
+
+		collected >= needed
 	}
 
 	fn recreate_atlas(&mut self, device: &Device) {
