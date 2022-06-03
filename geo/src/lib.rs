@@ -5,15 +5,20 @@ use std::{
 	error::Error,
 	fmt::{Debug, Display},
 	fs::File,
-	io::{Read, Write},
+	io::{BufReader, Read, Write},
 	path::{Path, PathBuf},
+	sync::{
+		atomic::{AtomicU64, Ordering},
+		RwLock,
+	},
 };
 
-use bitpacking::{BitPacker, BitPacker8x};
-pub use lz4;
-use lz4::EncoderBuilder;
+use memmap2::{Mmap, MmapOptions};
+use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 
-mod load;
+use crate::old::GeoTile;
+
+mod old;
 
 /// ## Format version 1
 /// Metadata file (_meta):
@@ -28,69 +33,24 @@ mod load;
 ///
 /// ## Format version 2
 /// Heightmap files are LZ4 compressed.
-pub const FORMAT_VERSION: u16 = 2;
-
-pub struct TileMetadata {
-	/// The file format version.
-	pub version: u16,
-	/// The length of the side of the square tile.
-	pub resolution: u16,
-	/// The multiplier for the raw stored values.
-	pub height_resolution: u16,
-}
-
-impl TileMetadata {
-	pub fn load_from_directory(dir: &Path) -> Result<Self, std::io::Error> {
-		let mut path = dir.to_path_buf();
-		path.push("_meta");
-
-		let mut file = File::open(path)?;
-		let mut buf = Vec::new();
-		file.read_to_end(&mut buf)?;
-
-		let version = u16::from_le_bytes(buf[0..2].try_into().unwrap());
-		let resolution = u16::from_le_bytes(buf[2..4].try_into().unwrap());
-		let height_resolution = u16::from_le_bytes(buf[4..6].try_into().unwrap());
-
-		Ok(Self {
-			version,
-			resolution,
-			height_resolution,
-		})
-	}
-
-	pub fn write_to_directory(&self, dir: &Path) -> Result<(), std::io::Error> {
-		let mut path = dir.to_path_buf();
-		path.push("_meta");
-
-		let mut file = File::create(path)?;
-		file.write_all(&self.version.to_le_bytes())?;
-		file.write_all(&self.resolution.to_le_bytes())?;
-		file.write_all(&self.height_resolution.to_le_bytes())?;
-
-		Ok(())
-	}
-}
-
-pub enum CompressError {
-	UnsupportedResolution(u16),
-}
-
-impl Display for CompressError {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-		match self {
-			Self::UnsupportedResolution(x) => write!(f, "Unsupported resolution: {} (must be a multiple of 256)", x),
-		}
-	}
-}
-
-impl Debug for CompressError {
-	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result { Display::fmt(self, f) }
-}
-
-impl Error for CompressError {}
+///
+/// ## Format version 3
+/// Folders are replaced with files:
+/// * [0..5]: Magic numbers: `[115, 117, 115, 115, 121]`.
+/// * [5..7]: The format version, little endian.
+/// * [7..9]: The resolution of the square tile (one side).
+/// * [9..11]: The resolution of height values (multiply with the raw value).
+/// * [11..11 + 360 * 180 * 8 @ tile_end]: 360 * 180 `u64`s that store the offsets of the tile in question (from the end
+///   of the dictionary). If zero, the tile is not present.
+/// * [tile_end..tile_end + 8]: The size of the decompression dictionary.
+/// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
+/// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
+///   next tile.
+pub const FORMAT_VERSION: u16 = 3;
 
 pub enum LoadError {
+	InvalidFileSize,
+	InvalidMagic,
 	UnknownFormatVersion,
 	Io(std::io::Error),
 }
@@ -98,6 +58,8 @@ pub enum LoadError {
 impl Display for LoadError {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 		match self {
+			LoadError::InvalidFileSize => write!(f, "Invalid file size"),
+			Self::InvalidMagic => write!(f, "Invalid magic number"),
 			Self::UnknownFormatVersion => write!(f, "Unknown format version"),
 			Self::Io(x) => write!(f, "IO error: {}", x),
 		}
@@ -114,146 +76,224 @@ impl From<std::io::Error> for LoadError {
 	fn from(x: std::io::Error) -> Self { Self::Io(x) }
 }
 
-#[derive(Clone)]
-pub struct GeoTile {
-	data: Vec<u8>,
+pub enum Dataset {
+	Ver1 {
+		metadata: TileMetadata,
+		path: PathBuf,
+	},
+	Ver3 {
+		metadata: TileMetadata,
+		tile_map: Vec<u64>,
+		dictionary: DecoderDictionary<'static>,
+		data: Mmap,
+	},
 }
 
-impl GeoTile {
-	pub fn get_file_name_for_coordinates(buf: &mut PathBuf, lat: i16, lon: i16) {
-		buf.push(format!(
-			"{}{}{}{}.geo",
-			if lat < 0 { 'S' } else { 'N' },
-			lat.abs(),
-			if lon < 0 { 'W' } else { 'E' },
-			lon.abs()
-		));
+impl Dataset {
+	const DICT_START_OFFSET: usize = 11 + 360 * 180 * 8;
+	const MAGIC: [u8; 5] = [115, 117, 115, 115, 121];
+	const TILE_MAP_START_OFFSET: usize = 11;
+
+	pub fn load(dir: impl Into<PathBuf>) -> Result<Self, LoadError> {
+		let dir = dir.into();
+		let meta = std::fs::metadata(&dir)?;
+		if meta.is_dir() {
+			Ok(Self::Ver1 {
+				metadata: TileMetadata::load_from_directory(&dir)?,
+				path: dir,
+			})
+		} else {
+			let mut file = File::open(dir)?;
+			let mut buffer = Vec::with_capacity(Self::DICT_START_OFFSET + 8);
+			buffer.resize(buffer.capacity(), 0);
+			file.read_exact(&mut buffer[0..7])
+				.map_err(|_| LoadError::InvalidFileSize)?;
+
+			if buffer[0..5] != Self::MAGIC {
+				return Err(LoadError::InvalidMagic);
+			}
+
+			let version = u16::from_le_bytes(buffer[5..7].try_into().unwrap());
+			if version != FORMAT_VERSION {
+				return Err(LoadError::UnknownFormatVersion);
+			}
+			file.read_exact(&mut buffer[0..4])
+				.map_err(|_| LoadError::InvalidFileSize)?;
+			let resolution = u16::from_le_bytes(buffer[2..4].try_into().unwrap());
+			let height_resolution = u16::from_le_bytes(buffer[4..6].try_into().unwrap());
+			let metadata = TileMetadata {
+				version,
+				resolution,
+				height_resolution,
+			};
+
+			file.read_exact(&mut buffer[0..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET + 8])
+				.map_err(|_| LoadError::InvalidFileSize)?;
+			let tile_map = buffer[0..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET]
+				.chunks_exact(8)
+				.map(|x| u64::from_le_bytes(x.try_into().unwrap()))
+				.collect();
+
+			let dict_size = u64::from_le_bytes(
+				buffer[Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET
+					..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET + 8]
+					.try_into()
+					.unwrap(),
+			);
+			buffer.resize(dict_size as usize, 0);
+			file.read_exact(&mut buffer[0..dict_size as usize])
+				.map_err(|_| LoadError::InvalidFileSize)?;
+
+			let offset = Self::DICT_START_OFFSET as u64 + dict_size;
+
+			Ok(Self::Ver3 {
+				metadata,
+				tile_map,
+				dictionary: DecoderDictionary::copy(&buffer),
+				data: unsafe { MmapOptions::new().offset(offset).map(&file)? },
+			})
+		}
 	}
 
-	pub fn get_coordinates_from_file_name(path: &Path) -> (i16, i16) {
-		let file_name = path.file_name().unwrap().to_str().unwrap();
-		let e_or_w_location = file_name.find(['E', 'W']).unwrap();
-		let mut lat: i16 = file_name[1..e_or_w_location].parse().unwrap();
-		if &file_name[0..1] == "S" {
-			lat = -lat;
+	pub fn metadata(&self) -> TileMetadata {
+		match self {
+			Self::Ver1 { metadata, .. } => *metadata,
+			Self::Ver3 { metadata, .. } => *metadata,
 		}
-		let mut lon: i16 = file_name[e_or_w_location + 1..file_name.len() - 4].parse().unwrap();
-		if &file_name[e_or_w_location..e_or_w_location + 1] == "W" {
-			lon = -lon;
-		}
-
-		(lat, lon)
 	}
 
-	/// Compress a terrain tile from raw data.
-	///
-	/// `data` must have length `metadata.resolution^2`.
-	pub fn new(metadata: &TileMetadata, data: impl IntoIterator<Item = i16>) -> Result<Self, CompressError> {
+	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Vec<i16>> {
+		match self {
+			Self::Ver1 { metadata, path } => {
+				let mut path = path.clone();
+				GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
+				GeoTile::load(metadata, &path).ok().map(|tile| tile.expand(metadata))
+			},
+			Self::Ver3 {
+				tile_map,
+				dictionary,
+				data,
+				metadata,
+			} => {
+				let index = map_lat_lon_to_index(lat, lon) * 8;
+				let offset = tile_map[index] as usize;
+				if offset == 0 {
+					return None;
+				}
+
+				let frame = &data[offset..];
+
+				let res = metadata.resolution as usize;
+				let mut decompressed = Vec::with_capacity(res * res * 2);
+				decompressed.resize(decompressed.capacity(), 0);
+
+				let mut decoder = Decoder::with_prepared_dictionary(BufReader::new(frame), dictionary)
+					.expect("Failed to create decoder")
+					.single_frame();
+				decoder.include_magicbytes(false).expect("Failed to set magic bytes");
+				decoder.read_exact(&mut decompressed).expect("Failed to decompress");
+
+				Some(
+					decompressed
+						.chunks_exact(2)
+						.map(|x| {
+							let positive_height =
+								u16::from_le_bytes(x.try_into().unwrap()) * metadata.height_resolution;
+							positive_height as i16 - 500
+						})
+						.collect(),
+				)
+			},
+		}
+	}
+
+	pub fn builder(metadata: TileMetadata) -> DatasetBuilder { DatasetBuilder::new(metadata) }
+}
+
+pub struct DatasetBuilder {
+	header: [u8; Dataset::TILE_MAP_START_OFFSET],
+	tile_map: Vec<AtomicU64>,
+	dictionary: Vec<u8>,
+	data: RwLock<Vec<u8>>,
+}
+
+impl DatasetBuilder {
+	pub fn new(metadata: TileMetadata) -> Self {
 		assert_eq!(
 			metadata.version, FORMAT_VERSION,
-			"Compressing is only supported for the latest format version ({})",
+			"Can only build datasets with version {}",
 			FORMAT_VERSION
 		);
 
-		if (metadata.resolution as usize * metadata.resolution as usize) % BitPacker8x::BLOCK_LEN != 0 {
-			return Err(CompressError::UnsupportedResolution(BitPacker8x::BLOCK_LEN as _));
-		}
+		let mut header = [0; Dataset::TILE_MAP_START_OFFSET];
+		header[0..5].copy_from_slice(&Dataset::MAGIC);
+		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
+		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());
+		header[9..11].copy_from_slice(&metadata.height_resolution.to_le_bytes());
 
-		// Calculate the minimum height and range.
-		let mut min = u16::MAX;
-		let mut max = u16::MIN;
-		// The format's `height`.
-		let mut data: Vec<_> = data
-			.into_iter()
-			.map(|raw| {
-				if raw < -500 {
-					panic!("Raw height is below -500: {}", raw);
-				}
-				let positive_altitude = raw + 500; // Lowest altitude is -414m.
-				let height = positive_altitude as f32 / metadata.height_resolution as f32;
-				let height = height.round() as u16;
-				min = min.min(height);
-				max = max.max(height);
-				height as u32
+		DatasetBuilder {
+			header,
+			tile_map: std::iter::repeat_with(|| AtomicU64::new(0)).take(180 * 360).collect(),
+			dictionary: Vec::new(),
+			data: RwLock::new(Vec::new()),
+		}
+	}
+
+	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) {
+		let data: Vec<_> = data
+			.iter()
+			.flat_map(|x| {
+				let positive_height = x + 500;
+				let height = positive_height as f32 / u16::from_le_bytes(self.header[9..11].try_into().unwrap()) as f32;
+				(height.round() as u16).to_le_bytes()
 			})
 			.collect();
 
-		// Calculate deltas
-		for x in data.iter_mut() {
-			*x -= min as u32;
-		}
+		let mut temp = Vec::new();
+		let mut encoder = Encoder::with_dictionary(&mut temp, 21, &self.dictionary).expect("Compression error");
+		encoder.set_pledged_src_size(Some(data.len() as u64)).unwrap();
+		encoder.include_magicbytes(false).unwrap();
+		encoder.include_checksum(false).unwrap();
+		encoder.long_distance_matching(true).unwrap();
+		encoder.multithread(num_cpus::get() as _).unwrap();
 
-		Ok(if max == min {
-			Self {
-				data: {
-					let mut vec = vec![0; 3];
-					vec[0..2].copy_from_slice(&min.to_le_bytes());
-					vec[2] = 0;
-					vec
-				},
-			}
-		} else {
-			// The max number of bits used to encode the deltas of each height from the minimum.
-			let bits = ((max - min).log2() + 1) as u8;
+		encoder.write_all(&data).unwrap();
+		encoder.finish().unwrap();
 
-			let block_size = BitPacker8x::compressed_block_size(bits);
-			let block_count = (metadata.resolution as usize * metadata.resolution as usize) / BitPacker8x::BLOCK_LEN;
-
-			let mut out = vec![0; 3 + block_count * block_size];
-			out[0..2].copy_from_slice(&min.to_le_bytes());
-			out[2] = bits;
-
-			let packer = BitPacker8x::new();
-			for (i, chunk) in data.chunks(BitPacker8x::BLOCK_LEN).enumerate() {
-				packer.compress(chunk, &mut out[3 + block_size * i..], bits);
-			}
-
-			Self { data: out }
-		})
+		let index = map_lat_lon_to_index(lat, lon);
+		let mut data = self.data.write().unwrap();
+		let offset = data.len() as u64;
+		data.extend(temp);
+		self.tile_map[index].store(offset, Ordering::SeqCst);
 	}
 
-	pub fn load(metadata: &TileMetadata, path: &Path) -> Result<Self, LoadError> {
-		match metadata.version {
-			1 => load::load_v1(path),
-			2 => load::load_v2(path),
-			_ => Err(LoadError::UnknownFormatVersion),
-		}
+	pub fn finish(self, path: &Path) -> Result<(), std::io::Error> {
+		let mut file = File::create(path)?;
+		file.write_all(&self.header)?;
+		file.write_all(unsafe { std::slice::from_raw_parts(self.tile_map.as_ptr() as _, self.tile_map.len() * 8) })?;
+		file.write_all(&self.dictionary.len().to_le_bytes())?;
+		file.write_all(&self.dictionary)?;
+		file.write_all(&self.data.into_inner().unwrap())?;
+		Ok(())
 	}
+}
 
-	pub fn chunk(&self) -> &[u8] { &self.data }
+pub fn map_lat_lon_to_index(lat: i16, lon: i16) -> usize {
+	debug_assert!(lat >= -90 && lat < 90, "Latitude out of range");
+	debug_assert!(lon >= -180 && lon < 180, "Longitude out of range");
 
-	pub fn expand(&self, metadata: &TileMetadata) -> Vec<i16> {
-		let min_height = u16::from_le_bytes(self.data[0..2].try_into().unwrap());
-		let bits = self.data[2];
+	let lat = (lat + 90) as usize;
+	let lon = (lon + 180) as usize;
+	lat * 360 + lon
+}
 
-		if bits == 0 {
-			let positive_height = min_height * metadata.height_resolution;
-			let height = positive_height as i16 - 500; // Lowest altitude is -414m.
-			vec![height; metadata.resolution as usize * metadata.resolution as usize]
-		} else {
-			let mut out = vec![0; metadata.resolution as usize * metadata.resolution as usize];
-			let block_size = BitPacker8x::compressed_block_size(bits);
-			let packer = BitPacker8x::new();
-			for (i, chunk) in out.chunks_exact_mut(BitPacker8x::BLOCK_LEN).enumerate() {
-				let compressed = &self.data[3 + block_size * i..];
-				packer.decompress(compressed, chunk, bits);
-			}
-
-			out.into_iter()
-				.map(|height| {
-					let positive_height = (height as u16 + min_height) * metadata.height_resolution;
-					positive_height as i16 - 500 // Lowest altitude is -414m.
-				})
-				.collect()
-		}
-	}
-
-	pub fn write_to_directory(&self, dir: &Path, latitude: i16, longitude: i16) -> Result<(), std::io::Error> {
-		let mut path = dir.to_path_buf();
-		Self::get_file_name_for_coordinates(&mut path, latitude, longitude);
-
-		let mut file = EncoderBuilder::new().level(9).build(File::create(path)?)?;
-		file.write_all(&self.data)?;
-		file.finish().1
-	}
+#[derive(Copy, Clone)]
+#[repr(C)]
+pub struct TileMetadata {
+	/// The file format version.
+	pub version: u16,
+	/// The length of the side of the square tile.
+	pub resolution: u16,
+	/// The multiplier for the raw stored values.
+	pub height_resolution: u16,
 }

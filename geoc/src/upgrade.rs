@@ -1,9 +1,11 @@
-use std::path::PathBuf;
+use std::{
+	path::PathBuf,
+	sync::atomic::{AtomicUsize, Ordering},
+};
 
 use clap::Args;
-use geo::{GeoTile, TileMetadata, FORMAT_VERSION};
-
-use crate::common::for_each_file;
+use geo::{Dataset, TileMetadata, FORMAT_VERSION};
+use rayon::prelude::*;
 
 #[derive(Args)]
 pub struct Upgrade {
@@ -13,42 +15,36 @@ pub struct Upgrade {
 }
 
 pub fn upgrade(upgrade: Upgrade) {
-	match std::fs::create_dir_all(&upgrade.output) {
-		Ok(_) => {},
-		Err(e) => {
-			eprintln!("{}", e);
-			return;
-		},
-	}
-
-	let mut metadata = match TileMetadata::load_from_directory(&upgrade.input) {
-		Ok(metadata) => metadata,
+	let source = match Dataset::load(upgrade.input) {
+		Ok(source) => source,
 		Err(err) => {
-			eprintln!("metadata could not be loaded: {}", err);
+			eprintln!("{}", err);
 			return;
 		},
 	};
-	if metadata.version == FORMAT_VERSION {
+
+	if source.metadata().version == FORMAT_VERSION {
 		eprintln!("already up to date");
 		return;
 	}
 
-	for_each_file(&upgrade.input, |entry| {
-		let path = entry.path();
-
-		let tile = GeoTile::load(&metadata, &path)?;
-		let (lat, lon) = GeoTile::get_coordinates_from_file_name(&path);
-		tile.write_to_directory(&upgrade.output, lat, lon)?;
-
-		Ok(())
+	let dest = Dataset::builder(TileMetadata {
+		version: FORMAT_VERSION,
+		..source.metadata()
 	});
 
-	metadata.version = FORMAT_VERSION;
-	match metadata.write_to_directory(&upgrade.output) {
-		Ok(_) => {},
-		Err(err) => {
-			eprintln!("metadata could not be written: {}", err);
-			return;
-		},
+	let max = 180 * 360;
+	let counter = AtomicUsize::new(1);
+
+	(-90..90).into_par_iter().for_each(|lat| {
+		(-180..180).into_par_iter().for_each(|lon| {
+			source.get_tile(lat, lon).map(|data| dest.add_tile(lat, lon, data));
+
+			print!("\r{}/{}", counter.fetch_add(1, Ordering::SeqCst), max);
+		});
+	});
+
+	if let Err(e) = dest.finish(&upgrade.output) {
+		eprintln!("{}", e);
 	}
 }
