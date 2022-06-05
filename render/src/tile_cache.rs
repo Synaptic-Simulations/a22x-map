@@ -3,7 +3,7 @@ use std::{
 	path::PathBuf,
 };
 
-use geo::{GeoTile, LoadError, TileMetadata};
+use geo::{Dataset, LoadError};
 use wgpu::{
 	include_wgsl,
 	BindGroup,
@@ -52,11 +52,6 @@ use wgpu::{
 };
 
 use crate::range::{Range, RANGES, RANGE_TO_DEGREES};
-
-struct Metadata {
-	metadata: TileMetadata,
-	dir: PathBuf,
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
@@ -141,17 +136,13 @@ impl TileCache {
 
 					let lon = lon as i16 - 180;
 					let lat = lat as i16 - 90;
-					let metadata = &self.atlas.metadata[meta];
-					let mut path = metadata.dir.clone();
-					GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
-					let tile = match GeoTile::load(&metadata.metadata, &path) {
-						Ok(x) => x,
-						Err(_) => {
-							*offset = self.atlas.not_found();
-							continue;
-						},
-					}
-					.expand(&metadata.metadata);
+					let dataset = &self.atlas.datasets[meta];
+					let tile = if let Some(data) = dataset.get_tile(lat, lon) {
+						data
+					} else {
+						*offset = self.atlas.not_found();
+						continue;
+					};
 
 					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(device, encoder, queue, &tile) {
 						offset
@@ -210,12 +201,14 @@ impl TileCache {
 	pub fn hillshade(&self) -> &TextureView { &self.atlas.hillshade_view }
 
 	pub fn tile_size_for_range(&self, range: Range) -> u32 {
-		self.atlas.metadata[self.atlas.lods[range as usize]].metadata.resolution as _
+		self.atlas.datasets[self.atlas.lods[range as usize]]
+			.metadata()
+			.resolution as _
 	}
 }
 
 struct Atlas {
-	metadata: Vec<Metadata>,
+	datasets: Vec<Dataset>,
 	lods: Vec<usize>,
 	layout_0: BindGroupLayout,
 	layout_1: BindGroupLayout,
@@ -237,19 +230,11 @@ struct Atlas {
 
 impl Atlas {
 	fn new(device: &Device, aspect_ratio: f32, height: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
-		let metadata: Result<Vec<_>, std::io::Error> = datasets
-			.into_iter()
-			.map(|dir| {
-				Ok(Metadata {
-					metadata: TileMetadata::load_from_directory(&dir)?,
-					dir,
-				})
-			})
-			.collect();
-		let metadata = metadata?;
+		let datasets: Result<Vec<_>, LoadError> = datasets.into_iter().map(|dir| Dataset::load(dir)).collect();
+		let datasets = datasets?;
 		let lods: Vec<_> = RANGE_TO_DEGREES
 			.iter()
-			.map(|&angle| Self::get_lod_for_range(angle, height, &metadata))
+			.map(|&angle| Self::get_lod_for_range(angle, height, &datasets))
 			.collect();
 
 		let layout_0 = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
@@ -302,7 +287,7 @@ impl Atlas {
 			multiview: None,
 		});
 
-		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &metadata);
+		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &datasets);
 		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
 		let group_0 = Self::make_group_0(device, &layout_0, &view);
 
@@ -310,7 +295,7 @@ impl Atlas {
 		let group_1 = Self::make_group_1(device, &layout_1, &cbuffer);
 
 		Ok(Self {
-			metadata,
+			datasets,
 			lods,
 			layout_0,
 			layout_1,
@@ -333,14 +318,14 @@ impl Atlas {
 
 	fn needs_clear(&mut self, range: Range) -> bool {
 		self.cbuffer_offset = 0;
-		let res = self.metadata[self.lods[range as usize]].metadata.resolution;
+		let res = self.datasets[self.lods[range as usize]].metadata().resolution;
 		let ret = res != self.curr_tile_res as _;
 		ret
 	}
 
 	fn clear(&mut self, range: Range) {
 		self.collected_tiles.clear();
-		self.curr_tile_res = self.metadata[self.lods[range as usize]].metadata.resolution as _;
+		self.curr_tile_res = self.datasets[self.lods[range as usize]].metadata().resolution as _;
 		self.curr_offset = TileOffset::default();
 	}
 
@@ -561,9 +546,9 @@ impl Atlas {
 		data
 	}
 
-	fn get_lod_for_range(vertical_angle: f32, height: f32, metadata: &[Metadata]) -> usize {
-		for (lod, meta) in metadata.iter().enumerate().rev() {
-			let pixels_on_screen = meta.metadata.resolution as f32 * vertical_angle;
+	fn get_lod_for_range(vertical_angle: f32, height: f32, datasets: &[Dataset]) -> usize {
+		for (lod, dataset) in datasets.iter().enumerate().rev() {
+			let pixels_on_screen = dataset.metadata().resolution as f32 * vertical_angle;
 			if pixels_on_screen >= height {
 				return lod;
 			}
@@ -572,10 +557,10 @@ impl Atlas {
 		0
 	}
 
-	fn get_resolution(aspect_ratio: f32, lods: &[usize], metadata: &[Metadata]) -> (u32, u32) {
+	fn get_resolution(aspect_ratio: f32, lods: &[usize], datasets: &[Dataset]) -> (u32, u32) {
 		let mut max_resolution = 0;
 		for (&lod, &range) in lods.iter().zip(RANGES.iter()) {
-			let resolution = range.vertical_tiles_loaded() * metadata[lod].metadata.resolution as u32;
+			let resolution = range.vertical_tiles_loaded() * datasets[lod].metadata().resolution as u32;
 			max_resolution = max_resolution.max(resolution);
 		}
 

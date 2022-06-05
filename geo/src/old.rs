@@ -86,8 +86,6 @@ impl GeoTile {
 		}
 	}
 
-	fn chunk(&self) -> &[u8] { &self.data }
-
 	pub fn expand(&self, metadata: &TileMetadata) -> Vec<i16> {
 		let min_height = u16::from_le_bytes(self.data[0..2].try_into().unwrap());
 		let bits = self.data[2];

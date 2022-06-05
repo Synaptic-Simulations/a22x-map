@@ -1,13 +1,11 @@
 use clap::{Parser, Subcommand};
 
-// use crate::{downsample::Downsample, generate::Generate, metadata::Metadata, upgrade::Upgrade};
-use crate::upgrade::Upgrade;
+use crate::{generate::Generate, metadata::Metadata, upgrade::Upgrade};
 
-// mod common;
 // mod downsample;
-// mod generate;
-// mod metadata;
-// mod tiff;
+mod generate;
+mod metadata;
+mod source;
 mod upgrade;
 
 #[derive(Parser)]
@@ -18,18 +16,18 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
-	// Generate(Generate),
+	Generate(Generate),
 	Upgrade(Upgrade),
 	// Downsample(Downsample),
-	// Metadata(Metadata),
+	Metadata(Metadata),
 }
 
 fn main() {
 	let opts: Options = Options::parse();
 	match opts.command {
-		// Command::Generate(generate) => generate::generate(generate),
+		Command::Generate(generate) => generate::generate(generate),
 		Command::Upgrade(upgrade) => upgrade::upgrade(upgrade),
 		// Command::Downsample(downsample) => downsample::downsample(downsample),
-		// Command::Metadata(metadata) => metadata::metadata(metadata),
+		Command::Metadata(metadata) => metadata::metadata(metadata),
 	}
 }

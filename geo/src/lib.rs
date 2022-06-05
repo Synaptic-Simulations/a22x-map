@@ -5,7 +5,7 @@ use std::{
 	error::Error,
 	fmt::{Debug, Display},
 	fs::File,
-	io::{BufReader, Read, Write},
+	io::{Read, Write},
 	path::{Path, PathBuf},
 	sync::{
 		atomic::{AtomicU64, Ordering},
@@ -35,8 +35,8 @@ mod old;
 /// Heightmap files are LZ4 compressed.
 ///
 /// ## Format version 3
-/// Folders are replaced with files:
-/// * [0..5]: Magic numbers: `[115, 117, 115, 115, 121]`.
+/// There is a single file:
+/// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
 /// * [5..7]: The format version, little endian.
 /// * [7..9]: The resolution of the square tile (one side).
 /// * [9..11]: The resolution of height values (multiply with the raw value).
@@ -46,6 +46,8 @@ mod old;
 /// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
 /// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
 ///   next tile.
+///
+/// Each tile is laid out in row-major order. The origin (lowest latitude and longitude) is the top-left.
 pub const FORMAT_VERSION: u16 = 3;
 
 pub enum LoadError {
@@ -106,21 +108,21 @@ impl Dataset {
 			let mut file = File::open(dir)?;
 			let mut buffer = Vec::with_capacity(Self::DICT_START_OFFSET + 8);
 			buffer.resize(buffer.capacity(), 0);
+
 			file.read_exact(&mut buffer[0..7])
 				.map_err(|_| LoadError::InvalidFileSize)?;
-
 			if buffer[0..5] != Self::MAGIC {
 				return Err(LoadError::InvalidMagic);
 			}
-
 			let version = u16::from_le_bytes(buffer[5..7].try_into().unwrap());
 			if version != FORMAT_VERSION {
 				return Err(LoadError::UnknownFormatVersion);
 			}
+
 			file.read_exact(&mut buffer[0..4])
 				.map_err(|_| LoadError::InvalidFileSize)?;
-			let resolution = u16::from_le_bytes(buffer[2..4].try_into().unwrap());
-			let height_resolution = u16::from_le_bytes(buffer[4..6].try_into().unwrap());
+			let resolution = u16::from_le_bytes(buffer[0..2].try_into().unwrap());
+			let height_resolution = u16::from_le_bytes(buffer[2..4].try_into().unwrap());
 			let metadata = TileMetadata {
 				version,
 				resolution,
@@ -133,7 +135,6 @@ impl Dataset {
 				.chunks_exact(8)
 				.map(|x| u64::from_le_bytes(x.try_into().unwrap()))
 				.collect();
-
 			let dict_size = u64::from_le_bytes(
 				buffer[Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET
 					..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET + 8]
@@ -141,10 +142,9 @@ impl Dataset {
 					.unwrap(),
 			);
 			buffer.resize(dict_size as usize, 0);
-			file.read_exact(&mut buffer[0..dict_size as usize])
-				.map_err(|_| LoadError::InvalidFileSize)?;
 
-			let offset = Self::DICT_START_OFFSET as u64 + dict_size;
+			file.read_exact(&mut buffer).map_err(|_| LoadError::InvalidFileSize)?;
+			let offset = Self::DICT_START_OFFSET as u64 + dict_size + 8;
 
 			Ok(Self::Ver3 {
 				metadata,
@@ -175,7 +175,7 @@ impl Dataset {
 				data,
 				metadata,
 			} => {
-				let index = map_lat_lon_to_index(lat, lon) * 8;
+				let index = map_lat_lon_to_index(lat, lon);
 				let offset = tile_map[index] as usize;
 				if offset == 0 {
 					return None;
@@ -187,7 +187,7 @@ impl Dataset {
 				let mut decompressed = Vec::with_capacity(res * res * 2);
 				decompressed.resize(decompressed.capacity(), 0);
 
-				let mut decoder = Decoder::with_prepared_dictionary(BufReader::new(frame), dictionary)
+				let mut decoder = Decoder::with_prepared_dictionary(frame, dictionary)
 					.expect("Failed to create decoder")
 					.single_frame();
 				decoder.include_magicbytes(false).expect("Failed to set magic bytes");

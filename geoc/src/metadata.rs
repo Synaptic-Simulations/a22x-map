@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use geo::TileMetadata;
+use geo::Dataset;
 
 #[derive(Args)]
 pub struct Metadata {
@@ -9,10 +9,10 @@ pub struct Metadata {
 }
 
 pub fn metadata(metadata: Metadata) {
-	let metadata = match TileMetadata::load_from_directory(&metadata.input) {
-		Ok(metadata) => metadata,
+	let metadata = match Dataset::load(metadata.input) {
+		Ok(x) => x.metadata(),
 		Err(err) => {
-			eprintln!("metadata could not be loaded: {}", err);
+			eprintln!("dataset could not be loaded: {}", err);
 			return;
 		},
 	};
