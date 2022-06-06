@@ -63,21 +63,6 @@ impl GeoTile {
 		));
 	}
 
-	fn get_coordinates_from_file_name(path: &Path) -> (i16, i16) {
-		let file_name = path.file_name().unwrap().to_str().unwrap();
-		let e_or_w_location = file_name.find(['E', 'W']).unwrap();
-		let mut lat: i16 = file_name[1..e_or_w_location].parse().unwrap();
-		if &file_name[0..1] == "S" {
-			lat = -lat;
-		}
-		let mut lon: i16 = file_name[e_or_w_location + 1..file_name.len() - 4].parse().unwrap();
-		if &file_name[e_or_w_location..e_or_w_location + 1] == "W" {
-			lon = -lon;
-		}
-
-		(lat, lon)
-	}
-
 	pub fn load(metadata: &TileMetadata, path: &Path) -> Result<Self, LoadError> {
 		match metadata.version {
 			1 => load_v1(path),
