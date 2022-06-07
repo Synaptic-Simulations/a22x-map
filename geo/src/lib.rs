@@ -1,4 +1,3 @@
-#![feature(int_log)]
 //! A library for working with the `a22x` map's terrain format.
 
 use std::{
@@ -16,10 +15,6 @@ use std::{
 use memmap2::{Mmap, MmapOptions};
 use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 
-use crate::old::GeoTile;
-
-mod old;
-
 /// ## Format version 1
 /// Metadata file (_meta):
 /// * [0..2]: The format version, little endian.
@@ -33,6 +28,8 @@ mod old;
 ///
 /// ## Format version 2
 /// Heightmap files are LZ4 compressed.
+///
+/// Format versions 1 and 2 are unsupported.
 ///
 /// ## Format version 3
 /// There is a single file:
@@ -53,16 +50,16 @@ pub const FORMAT_VERSION: u16 = 3;
 pub enum LoadError {
 	InvalidFileSize,
 	InvalidMagic,
-	UnknownFormatVersion,
+	UnsupportedFormatVersion,
 	Io(std::io::Error),
 }
 
 impl Display for LoadError {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 		match self {
-			LoadError::InvalidFileSize => write!(f, "Invalid file size"),
+			Self::InvalidFileSize => write!(f, "Invalid file size"),
 			Self::InvalidMagic => write!(f, "Invalid magic number"),
-			Self::UnknownFormatVersion => write!(f, "Unknown format version"),
+			Self::UnsupportedFormatVersion => write!(f, "Unknown format version"),
 			Self::Io(x) => write!(f, "IO error: {}", x),
 		}
 	}
@@ -78,17 +75,11 @@ impl From<std::io::Error> for LoadError {
 	fn from(x: std::io::Error) -> Self { Self::Io(x) }
 }
 
-pub enum Dataset {
-	Ver1 {
-		metadata: TileMetadata,
-		path: PathBuf,
-	},
-	Ver3 {
-		metadata: TileMetadata,
-		tile_map: Vec<u64>,
-		dictionary: DecoderDictionary<'static>,
-		data: Mmap,
-	},
+pub struct Dataset {
+	metadata: TileMetadata,
+	tile_map: Vec<u64>,
+	dictionary: DecoderDictionary<'static>,
+	data: Mmap,
 }
 
 impl Dataset {
@@ -100,10 +91,7 @@ impl Dataset {
 		let dir = dir.into();
 		let meta = std::fs::metadata(&dir)?;
 		if meta.is_dir() {
-			Ok(Self::Ver1 {
-				metadata: TileMetadata::load_from_directory(&dir)?,
-				path: dir,
-			})
+			Err(LoadError::UnsupportedFormatVersion)
 		} else {
 			let mut file = File::open(dir)?;
 			let mut buffer = Vec::with_capacity(Self::DICT_START_OFFSET + 8);
@@ -116,7 +104,7 @@ impl Dataset {
 			}
 			let version = u16::from_le_bytes(buffer[5..7].try_into().unwrap());
 			if version != FORMAT_VERSION {
-				return Err(LoadError::UnknownFormatVersion);
+				return Err(LoadError::UnsupportedFormatVersion);
 			}
 
 			file.read_exact(&mut buffer[0..4])
@@ -146,7 +134,7 @@ impl Dataset {
 			file.read_exact(&mut buffer).map_err(|_| LoadError::InvalidFileSize)?;
 			let offset = Self::DICT_START_OFFSET as u64 + dict_size + 8;
 
-			Ok(Self::Ver3 {
+			Ok(Self {
 				metadata,
 				tile_map,
 				dictionary: DecoderDictionary::copy(&buffer),
@@ -156,68 +144,60 @@ impl Dataset {
 	}
 
 	pub fn metadata(&self) -> TileMetadata {
-		match self {
-			Self::Ver1 { metadata, .. } => *metadata,
-			Self::Ver3 { metadata, .. } => *metadata,
-		}
+		self.metadata
 	}
 
 	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Vec<i16>> {
-		match self {
-			Self::Ver1 { metadata, path } => {
-				let mut path = path.clone();
-				GeoTile::get_file_name_for_coordinates(&mut path, lat, lon);
-				GeoTile::load(metadata, &path).ok().map(|tile| tile.expand(metadata))
-			},
-			Self::Ver3 {
-				tile_map,
-				dictionary,
-				data,
-				metadata,
-			} => {
-				let index = map_lat_lon_to_index(lat, lon);
-				let offset = tile_map[index] as usize;
-				if offset == 0 {
-					return None;
-				}
-
-				let frame = &data[offset..];
-
-				let res = metadata.resolution as usize;
-				let mut decompressed = Vec::with_capacity(res * res * 2);
-				decompressed.resize(decompressed.capacity(), 0);
-
-				let mut decoder = Decoder::with_prepared_dictionary(frame, dictionary)
-					.expect("Failed to create decoder")
-					.single_frame();
-				decoder.include_magicbytes(false).expect("Failed to set magic bytes");
-				decoder.read_exact(&mut decompressed).expect("Failed to decompress");
-
-				Some(
-					decompressed
-						.chunks_exact(2)
-						.map(|x| {
-							let positive_height =
-								u16::from_le_bytes(x.try_into().unwrap()) * metadata.height_resolution;
-							positive_height as i16 - 500
-						})
-						.collect(),
-				)
-			},
+		let index = map_lat_lon_to_index(lat, lon);
+		let offset = self.tile_map[index] as usize;
+		if offset == 0 {
+			return None;
 		}
+
+		let frame = &self.data[offset..];
+
+		let res = self.metadata.resolution as usize;
+		let mut decompressed = Vec::with_capacity(res * res * 2);
+		decompressed.resize(decompressed.capacity(), 0);
+
+		let mut decoder = Decoder::with_prepared_dictionary(frame, &self.dictionary)
+			.expect("Failed to create decoder")
+			.single_frame();
+		decoder.include_magicbytes(false).expect("Failed to set magic bytes");
+		decoder.read_exact(&mut decompressed).expect("Failed to decompress");
+
+		Some(
+			decompressed
+				.chunks_exact(2)
+				.map(|x| {
+					let positive_height =
+						u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
+					positive_height as i16 - 500
+				})
+				.collect(),
+		)
 	}
 
 	pub fn builder(metadata: TileMetadata) -> DatasetBuilder { DatasetBuilder::new(metadata) }
 }
 
 pub struct DatasetBuilder {
-	header: [u8; Dataset::TILE_MAP_START_OFFSET],
+	metadata: TileMetadata,
 	tile_map: Vec<AtomicU64>,
 	dictionary: Vec<u8>,
 	data: RwLock<Vec<u8>>,
 }
 
 impl DatasetBuilder {
+	pub fn from_dataset(dataset: Dataset) -> Self {
+		Self {
+			metadata: dataset.metadata,
+			tile_map: dataset.tile_map.into_iter().map(|x| AtomicU64::new(x)).collect(),
+			dictionary: Vec::new(),
+			data: RwLock::new(dataset.data.to_vec()),
+		}
+	}
+
 	pub fn new(metadata: TileMetadata) -> Self {
 		assert_eq!(
 			metadata.version, FORMAT_VERSION,
@@ -225,14 +205,8 @@ impl DatasetBuilder {
 			FORMAT_VERSION
 		);
 
-		let mut header = [0; Dataset::TILE_MAP_START_OFFSET];
-		header[0..5].copy_from_slice(&Dataset::MAGIC);
-		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
-		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());
-		header[9..11].copy_from_slice(&metadata.height_resolution.to_le_bytes());
-
 		DatasetBuilder {
-			header,
+			metadata,
 			tile_map: std::iter::repeat_with(|| AtomicU64::new(0)).take(180 * 360).collect(),
 			dictionary: Vec::new(),
 			data: RwLock::new(Vec::new()),
@@ -244,7 +218,7 @@ impl DatasetBuilder {
 			.iter()
 			.flat_map(|x| {
 				let positive_height = x + 500;
-				let height = positive_height as f32 / u16::from_le_bytes(self.header[9..11].try_into().unwrap()) as f32;
+				let height = positive_height as f32 / self.metadata.height_resolution as f32;
 				(height.round() as u16).to_le_bytes()
 			})
 			.collect();
@@ -268,8 +242,14 @@ impl DatasetBuilder {
 	}
 
 	pub fn finish(self, path: &Path) -> Result<(), std::io::Error> {
+		let mut header = [0; Dataset::TILE_MAP_START_OFFSET];
+		header[0..5].copy_from_slice(&Dataset::MAGIC);
+		header[5..7].copy_from_slice(&self.metadata.version.to_le_bytes());
+		header[7..9].copy_from_slice(&self.metadata.resolution.to_le_bytes());
+		header[9..11].copy_from_slice(&self.metadata.height_resolution.to_le_bytes());
+
 		let mut file = File::create(path)?;
-		file.write_all(&self.header)?;
+		file.write_all(&header)?;
 		file.write_all(unsafe { std::slice::from_raw_parts(self.tile_map.as_ptr() as _, self.tile_map.len() * 8) })?;
 		file.write_all(&self.dictionary.len().to_le_bytes())?;
 		file.write_all(&self.dictionary)?;

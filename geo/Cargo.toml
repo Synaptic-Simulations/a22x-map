@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 bitpacking = "0.8"
-lz4 = "1.23.3"
+ctrlc = "3.2.2"
 memmap2 = "0.5.3"
 num_cpus = "1.13.1"
 zstd = { version = "*", features = ["experimental", "zstdmt"] }

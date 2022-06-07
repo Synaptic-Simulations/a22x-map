@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 use crate::{generate::Generate, metadata::Metadata, upgrade::Upgrade};
 
-// mod downsample;
+mod common;
 mod generate;
 mod metadata;
 mod source;
