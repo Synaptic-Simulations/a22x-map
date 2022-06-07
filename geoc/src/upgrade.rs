@@ -1,11 +1,9 @@
-use std::{
-	path::PathBuf,
-	sync::atomic::{AtomicUsize, Ordering},
-};
+use std::path::PathBuf;
 
 use clap::Args;
 use geo::{Dataset, TileMetadata, FORMAT_VERSION};
-use rayon::prelude::*;
+
+use crate::common::for_tile_in_output;
 
 #[derive(Args)]
 pub struct Upgrade {
@@ -23,28 +21,15 @@ pub fn upgrade(upgrade: Upgrade) {
 		},
 	};
 
-	if source.metadata().version == FORMAT_VERSION {
-		eprintln!("already up to date");
-		return;
-	}
-
-	let dest = Dataset::builder(TileMetadata {
-		version: FORMAT_VERSION,
-		..source.metadata()
-	});
-
-	let max = 180 * 360;
-	let counter = AtomicUsize::new(1);
-
-	(-90..90).into_par_iter().for_each(|lat| {
-		(-180..180).into_par_iter().for_each(|lon| {
-			source.get_tile(lat, lon).map(|data| dest.add_tile(lat, lon, data));
-
-			print!("\r{}/{}", counter.fetch_add(1, Ordering::SeqCst), max);
-		});
-	});
-
-	if let Err(e) = dest.finish(&upgrade.output) {
-		eprintln!("{}", e);
-	}
+	for_tile_in_output(
+		upgrade.output,
+		TileMetadata {
+			version: FORMAT_VERSION,
+			..source.metadata()
+		},
+		|lat, lon, builder| {
+			source.get_tile(lat, lon).map(|data| builder.add_tile(lat, lon, data));
+			Ok(())
+		},
+	);
 }

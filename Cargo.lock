@@ -926,7 +926,7 @@ dependencies = [
 [[package]]
 name = "gdal"
 version = "0.12.0"
-source = "git+https://github.com/Synaptic-Simulations/gdal#0051233ee3afa3dd2656ba653d291c300c3dd654"
+source = "git+https://github.com/Synaptic-Simulations/gdal#261b776ac2695280524e51a8d7c911ee4460500d"
 dependencies = [
  "bitflags",
  "chrono",
@@ -940,7 +940,7 @@ dependencies = [
 [[package]]
 name = "gdal-sys"
 version = "0.6.0"
-source = "git+https://github.com/Synaptic-Simulations/gdal#0051233ee3afa3dd2656ba653d291c300c3dd654"
+source = "git+https://github.com/Synaptic-Simulations/gdal#261b776ac2695280524e51a8d7c911ee4460500d"
 dependencies = [
  "libc",
  "reqwest",
@@ -1012,9 +1012,11 @@ name = "geoc"
 version = "0.1.0"
 dependencies = [
  "clap",
+ "ctrlc",
  "gdal",
  "geo",
  "rayon",
+ "thread_local",
 ]
 
 [[package]]
@@ -1206,9 +1208,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff8670570af52249509a86f5e3e18a08c60b177071826898fde8997cf5f6bfbb"
+checksum = "75f43d41e26995c17e71ee126451dd3941010b0514a81a9d11f3b341debc2399"
 dependencies = [
  "bytes",
  "fnv",

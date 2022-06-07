@@ -18,7 +18,6 @@ struct Options {
 enum Command {
 	Generate(Generate),
 	Upgrade(Upgrade),
-	// Downsample(Downsample),
 	Metadata(Metadata),
 }
 
@@ -27,7 +26,6 @@ fn main() {
 	match opts.command {
 		Command::Generate(generate) => generate::generate(generate),
 		Command::Upgrade(upgrade) => upgrade::upgrade(upgrade),
-		// Command::Downsample(downsample) => downsample::downsample(downsample),
 		Command::Metadata(metadata) => metadata::metadata(metadata),
 	}
 }

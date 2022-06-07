@@ -1,10 +1,12 @@
 use std::path::PathBuf;
 
 use clap::Args;
-use gdal::errors::GdalError;
-use geo::{Dataset, TileMetadata, FORMAT_VERSION};
+use geo::{TileMetadata, FORMAT_VERSION};
 
-use crate::source::Raster;
+use crate::{
+	common::for_tile_in_output,
+	source::{LatLon, Raster},
+};
 
 #[derive(Args)]
 pub struct Generate {
@@ -18,33 +20,34 @@ pub struct Generate {
 }
 
 pub fn generate(generate: Generate) {
-	let builder = Dataset::builder(TileMetadata {
-		version: FORMAT_VERSION,
-		resolution: generate.resolution,
-		height_resolution: generate.height_resolution,
-	});
-
-	match (|| -> Result<(), GdalError> {
-		let raster = Raster::load(&generate.input)?;
-		let (lat, lon) = raster.get_pos()?;
-
-		builder.add_tile(
-			lat,
-			lon,
-			raster.get_data((generate.resolution as _, generate.resolution as _))?,
-		);
-
-		Ok(())
-	})() {
-		Ok(_) => {},
+	let source = match Raster::load(&generate.input) {
+		Ok(source) => source,
 		Err(err) => {
-			eprintln!("{}", err);
+			eprintln!("Error loading data source: {:?}", err);
 			return;
 		},
 	};
+	let metadata = TileMetadata {
+		version: FORMAT_VERSION,
+		resolution: generate.resolution,
+		height_resolution: generate.height_resolution,
+	};
 
-	match builder.finish(&generate.output) {
-		Ok(_) => (),
-		Err(err) => eprintln!("{}", err),
-	}
+	for_tile_in_output(generate.output, metadata, |lat, lon, builder| {
+		source
+			.get_data(
+				LatLon {
+					lat: lat as f64,
+					lon: lon as f64,
+				},
+				LatLon {
+					lat: (lat + 1) as f64,
+					lon: (lon + 1) as f64,
+				},
+				metadata.resolution as _,
+			)
+			.map(|data| builder.add_tile(lat, lon, data));
+
+		Ok(())
+	});
 }

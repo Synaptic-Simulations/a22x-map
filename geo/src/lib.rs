@@ -6,10 +6,7 @@ use std::{
 	fs::File,
 	io::{Read, Write},
 	path::{Path, PathBuf},
-	sync::{
-		atomic::{AtomicU64, Ordering},
-		RwLock,
-	},
+	sync::RwLock,
 };
 
 use memmap2::{Mmap, MmapOptions};
@@ -44,7 +41,7 @@ use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 /// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
 ///   next tile.
 ///
-/// Each tile is laid out in row-major order. The origin (lowest latitude and longitude) is the top-left.
+/// Each tile is laid out in row-major order. The origin (lowest latitude and longitude) is the bottom-left.
 pub const FORMAT_VERSION: u16 = 3;
 
 pub enum LoadError {
@@ -143,8 +140,11 @@ impl Dataset {
 		}
 	}
 
-	pub fn metadata(&self) -> TileMetadata {
-		self.metadata
+	pub fn metadata(&self) -> TileMetadata { self.metadata }
+
+	pub fn tile_exists(&self, lat: i16, lon: i16) -> bool {
+		let index = map_lat_lon_to_index(lat, lon);
+		self.tile_map[index] != 0
 	}
 
 	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Vec<i16>> {
@@ -170,8 +170,7 @@ impl Dataset {
 			decompressed
 				.chunks_exact(2)
 				.map(|x| {
-					let positive_height =
-						u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
+					let positive_height = u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
 					positive_height as i16 - 500
 				})
 				.collect(),
@@ -181,20 +180,26 @@ impl Dataset {
 	pub fn builder(metadata: TileMetadata) -> DatasetBuilder { DatasetBuilder::new(metadata) }
 }
 
+struct Locked {
+	tile_map: Vec<u64>,
+	data: Vec<u8>,
+}
+
 pub struct DatasetBuilder {
 	metadata: TileMetadata,
-	tile_map: Vec<AtomicU64>,
 	dictionary: Vec<u8>,
-	data: RwLock<Vec<u8>>,
+	locked: RwLock<Locked>,
 }
 
 impl DatasetBuilder {
 	pub fn from_dataset(dataset: Dataset) -> Self {
 		Self {
 			metadata: dataset.metadata,
-			tile_map: dataset.tile_map.into_iter().map(|x| AtomicU64::new(x)).collect(),
 			dictionary: Vec::new(),
-			data: RwLock::new(dataset.data.to_vec()),
+			locked: RwLock::new(Locked {
+				tile_map: dataset.tile_map,
+				data: dataset.data.to_vec(),
+			}),
 		}
 	}
 
@@ -207,10 +212,17 @@ impl DatasetBuilder {
 
 		DatasetBuilder {
 			metadata,
-			tile_map: std::iter::repeat_with(|| AtomicU64::new(0)).take(180 * 360).collect(),
 			dictionary: Vec::new(),
-			data: RwLock::new(Vec::new()),
+			locked: RwLock::new(Locked {
+				tile_map: vec![0; 360 * 180],
+				data: Vec::new(),
+			}),
 		}
+	}
+
+	pub fn tile_exists(&self, lat: i16, lon: i16) -> bool {
+		let index = map_lat_lon_to_index(lat, lon);
+		self.locked.read().unwrap().tile_map[index] != 0
 	}
 
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) {
@@ -235,10 +247,10 @@ impl DatasetBuilder {
 		encoder.finish().unwrap();
 
 		let index = map_lat_lon_to_index(lat, lon);
-		let mut data = self.data.write().unwrap();
+		let mut locked = self.locked.write().unwrap();
 		let offset = data.len() as u64;
-		data.extend(temp);
-		self.tile_map[index].store(offset, Ordering::SeqCst);
+		locked.tile_map[index] = offset;
+		locked.data.extend(temp);
 	}
 
 	pub fn finish(self, path: &Path) -> Result<(), std::io::Error> {
@@ -248,12 +260,16 @@ impl DatasetBuilder {
 		header[7..9].copy_from_slice(&self.metadata.resolution.to_le_bytes());
 		header[9..11].copy_from_slice(&self.metadata.height_resolution.to_le_bytes());
 
+		let locked = self.locked.into_inner().unwrap();
+
 		let mut file = File::create(path)?;
 		file.write_all(&header)?;
-		file.write_all(unsafe { std::slice::from_raw_parts(self.tile_map.as_ptr() as _, self.tile_map.len() * 8) })?;
+		file.write_all(unsafe {
+			std::slice::from_raw_parts(locked.tile_map.as_ptr() as _, locked.tile_map.len() * 8)
+		})?;
 		file.write_all(&self.dictionary.len().to_le_bytes())?;
 		file.write_all(&self.dictionary)?;
-		file.write_all(&self.data.into_inner().unwrap())?;
+		file.write_all(&locked.data)?;
 		Ok(())
 	}
 }
@@ -267,7 +283,15 @@ pub fn map_lat_lon_to_index(lat: i16, lon: i16) -> usize {
 	lat * 360 + lon
 }
 
-#[derive(Copy, Clone)]
+pub fn map_index_to_lat_lon(index: usize) -> (i16, i16) {
+	debug_assert!(index < 180 * 360, "Index out of range");
+
+	let lat = (index / 360) as i16 - 90;
+	let lon = (index % 360) as i16 - 180;
+	(lat, lon)
+}
+
+#[derive(Copy, Clone, Eq, PartialEq)]
 #[repr(C)]
 pub struct TileMetadata {
 	/// The file format version.

@@ -288,6 +288,9 @@ impl Atlas {
 		});
 
 		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &datasets);
+		let limits = device.limits();
+		let width = width.min(limits.max_texture_dimension_2d);
+		let height = height.min(limits.max_texture_dimension_2d);
 		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
 		let group_0 = Self::make_group_0(device, &layout_0, &view);
 
