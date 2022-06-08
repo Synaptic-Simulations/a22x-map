@@ -176,8 +176,6 @@ impl Dataset {
 				.collect(),
 		)
 	}
-
-	pub fn builder(metadata: TileMetadata) -> DatasetBuilder { DatasetBuilder::new(metadata) }
 }
 
 struct Locked {
@@ -186,14 +184,16 @@ struct Locked {
 }
 
 pub struct DatasetBuilder {
+	compression_level: i8,
 	metadata: TileMetadata,
 	dictionary: Vec<u8>,
 	locked: RwLock<Locked>,
 }
 
 impl DatasetBuilder {
-	pub fn from_dataset(dataset: Dataset) -> Self {
+	pub fn from_dataset(dataset: Dataset, compression_level: i8) -> Self {
 		Self {
+			compression_level,
 			metadata: dataset.metadata,
 			dictionary: Vec::new(),
 			locked: RwLock::new(Locked {
@@ -203,7 +203,7 @@ impl DatasetBuilder {
 		}
 	}
 
-	pub fn new(metadata: TileMetadata) -> Self {
+	pub fn new(metadata: TileMetadata, compression_level: i8) -> Self {
 		assert_eq!(
 			metadata.version, FORMAT_VERSION,
 			"Can only build datasets with version {}",
@@ -211,6 +211,7 @@ impl DatasetBuilder {
 		);
 
 		DatasetBuilder {
+			compression_level,
 			metadata,
 			dictionary: Vec::new(),
 			locked: RwLock::new(Locked {
@@ -236,7 +237,7 @@ impl DatasetBuilder {
 			.collect();
 
 		let mut temp = Vec::new();
-		let mut encoder = Encoder::with_dictionary(&mut temp, 21, &self.dictionary).expect("Compression error");
+		let mut encoder = Encoder::with_dictionary(&mut temp, self.compression_level as _, &self.dictionary).expect("Compression error");
 		encoder.set_pledged_src_size(Some(data.len() as u64)).unwrap();
 		encoder.include_magicbytes(false).unwrap();
 		encoder.include_checksum(false).unwrap();
