@@ -10,6 +10,8 @@ pub struct Upgrade {
 	input: PathBuf,
 	#[clap(short = 'o', long = "out", default_value = "output")]
 	output: PathBuf,
+	#[clap(short = 'c', long = "compression", default_value_t = 21)]
+	compression_level: i8,
 }
 
 pub fn upgrade(upgrade: Upgrade) {
@@ -23,6 +25,7 @@ pub fn upgrade(upgrade: Upgrade) {
 
 	for_tile_in_output(
 		upgrade.output,
+		upgrade.compression_level,
 		TileMetadata {
 			version: FORMAT_VERSION,
 			..source.metadata()

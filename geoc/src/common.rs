@@ -11,7 +11,7 @@ use geo::{map_index_to_lat_lon, Dataset, DatasetBuilder, TileMetadata};
 use rayon::prelude::*;
 
 pub fn for_tile_in_output(
-	output: PathBuf, metadata: TileMetadata,
+	output: PathBuf, compression_level: i8, metadata: TileMetadata,
 	exec: impl Fn(i16, i16, &DatasetBuilder) -> Result<(), Box<dyn Error>> + Sync,
 ) {
 	let was_quit = Arc::new(AtomicBool::new(false));
@@ -21,23 +21,23 @@ pub fn for_tile_in_output(
 			std::process::exit(1);
 		}
 
-		println!("\nExiting");
+		println!("\nFinishing up, press Ctrl + C again to exit immediately");
 		handler_used.store(true, Ordering::Release);
 	});
 
-	fn make_builder(path: &Path, metadata: TileMetadata) -> DatasetBuilder {
+	fn make_builder(path: &Path, metadata: TileMetadata, compression_level: i8) -> DatasetBuilder {
 		if path.exists() {
 			if let Ok(x) = Dataset::load(path) {
 				if metadata == x.metadata() {
 					println!("Continuing from last execution");
-					return DatasetBuilder::from_dataset(x);
+					return DatasetBuilder::from_dataset(x, compression_level);
 				}
 			}
 		}
-		DatasetBuilder::new(metadata)
+		DatasetBuilder::new(metadata, compression_level)
 	}
 
-	let builder = make_builder(&output, metadata);
+	let builder = make_builder(&output, metadata, compression_level);
 
 	let tiles = 360 * 180;
 	let counter = AtomicUsize::new(1);
