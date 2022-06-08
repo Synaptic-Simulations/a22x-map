@@ -8,5 +8,5 @@ edition = "2021"
 bitpacking = "0.8"
 ctrlc = "3.2.2"
 memmap2 = "0.5.3"
-num_cpus = "1.13.1"
-zstd = { version = "*", features = ["experimental", "zstdmt"] }
+tracy = { package = "tracy_full", version = "1.1.2" }
+zstd = { version = "*", features = ["experimental"] }

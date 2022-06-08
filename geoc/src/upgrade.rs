@@ -24,14 +24,17 @@ pub fn upgrade(upgrade: Upgrade) {
 	};
 
 	for_tile_in_output(
-		upgrade.output,
+		&upgrade.output,
 		upgrade.compression_level,
 		TileMetadata {
 			version: FORMAT_VERSION,
 			..source.metadata()
 		},
 		|lat, lon, builder| {
-			source.get_tile(lat, lon).map(|data| builder.add_tile(lat, lon, data));
+			source
+				.get_tile(lat, lon)
+				.map(|data| builder.add_tile(lat, lon, data))
+				.transpose()?;
 			Ok(())
 		},
 	);

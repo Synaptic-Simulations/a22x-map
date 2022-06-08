@@ -9,9 +9,11 @@ generate = ["gdal"]
 
 [dependencies]
 clap = { version = "3.1.18", features = ["derive"] }
+crossbeam = "0.8.1"
 ctrlc = "3.2.2"
 gdal = { git = "https://github.com/Synaptic-Simulations/gdal", optional = true }
 rayon = "1.5.3"
+tracy = { package = "tracy_full", version = "1.1.2", features = ["enable"] }
 thread_local = "1.1.4"
 
 geo = { path = "../geo" }

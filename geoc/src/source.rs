@@ -36,6 +36,8 @@ pub struct Raster {
 
 impl Raster {
 	pub fn load(path: &Path) -> Result<Self, GdalError> {
+		tracy::zone!("Load raster");
+
 		let dataset = Dataset::open(path)?;
 		let transform = dataset.geo_transform()?;
 
@@ -54,6 +56,8 @@ impl Raster {
 	}
 
 	pub fn get_data<T: GdalType + Copy>(&self, bottom_left: LatLon, top_right: LatLon, res: usize) -> Option<Vec<T>> {
+		tracy::zone!("Get raster data");
+
 		let set = self
 			.set
 			.get_or(|| Dataset::open(&self.path).expect("Failed to open dataset on thread"));
@@ -74,7 +78,7 @@ impl Raster {
 				(xl, yt),
 				((xr - xl) as usize, (yb - yt) as usize),
 				(res, res),
-				Some(ResampleAlg::Lanczos),
+				Some(ResampleAlg::Bilinear),
 			)
 			.ok()
 			.map(|buf| buf.data)

@@ -45,7 +45,7 @@ pub fn generate(generate: Generate) {
 	};
 
 	for_tile_in_output(
-		generate.output,
+		&generate.output,
 		generate.compression_level,
 		metadata,
 		|lat, lon, builder| {
@@ -61,18 +61,22 @@ pub fn generate(generate: Generate) {
 			source
 				.get_data(bottom_left, top_right, metadata.resolution as _)
 				.and_then(|data| {
+					tracy::zone!("Load water");
 					water
 						.get_data(bottom_left, top_right, metadata.resolution as _)
 						.map(|water: Vec<u8>| (data, water))
 				})
 				.map(|(mut data, water)| {
+					tracy::zone!("Merge water mask");
+
 					for (height, &mask) in data.iter_mut().zip(water.iter()) {
 						if mask != 0 {
 							*height = -500;
 						}
 					}
-					builder.add_tile(lat, lon, data);
-				});
+					builder.add_tile(lat, lon, data)
+				})
+				.transpose()?;
 
 			Ok(())
 		},
