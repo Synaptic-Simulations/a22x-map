@@ -67,7 +67,7 @@ fn main() {
 	let (device, queue) = block_on(adapter.request_device(
 		&DeviceDescriptor {
 			label: Some("Device"),
-			features: Features::TIMESTAMP_QUERY,
+			features: Features::default(),
 			limits: Default::default(),
 		},
 		None,

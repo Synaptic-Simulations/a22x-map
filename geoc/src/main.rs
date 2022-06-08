@@ -1,10 +1,14 @@
 use clap::{Parser, Subcommand};
 
-use crate::{generate::Generate, metadata::Metadata, upgrade::Upgrade};
+#[cfg(feature = "generate")]
+use crate::generate::Generate;
+use crate::{metadata::Metadata, upgrade::Upgrade};
 
 mod common;
+#[cfg(feature = "generate")]
 mod generate;
 mod metadata;
+#[cfg(feature = "generate")]
 mod source;
 mod upgrade;
 
@@ -16,6 +20,7 @@ struct Options {
 
 #[derive(Subcommand)]
 enum Command {
+	#[cfg(feature = "generate")]
 	Generate(Generate),
 	Upgrade(Upgrade),
 	Metadata(Metadata),
@@ -24,6 +29,7 @@ enum Command {
 fn main() {
 	let opts: Options = Options::parse();
 	match opts.command {
+		#[cfg(feature = "generate")]
 		Command::Generate(generate) => generate::generate(generate),
 		Command::Upgrade(upgrade) => upgrade::upgrade(upgrade),
 		Command::Metadata(metadata) => metadata::metadata(metadata),
