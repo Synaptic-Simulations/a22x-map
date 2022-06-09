@@ -124,9 +124,10 @@ impl Ui {
 			});
 		});
 
-		tracy::zone!("Map Render");
 		if let Some(renderer) = self.renderer.as_mut() {
 			renderer.render(&self.options, device, queue, view, encoder);
 		}
 	}
+
+	pub fn resize(&mut self, width: u32, height: u32) { self.renderer.as_mut().map(|x| x.resize(width, height)); }
 }

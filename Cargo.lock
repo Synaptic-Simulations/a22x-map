@@ -2099,6 +2099,7 @@ dependencies = [
  "geo",
  "hassle-rs",
  "log",
+ "tracy_full",
  "walkdir",
  "wgpu",
 ]
@@ -2662,9 +2663,9 @@ dependencies = [
 
 [[package]]
 name = "tracy_full"
-version = "1.1.2"
+version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d2e973b743202b6d74ce0c08924ec340b3a3fb3e309783f84b89e4c9331281b5"
+checksum = "d3aa38f07c76225cb0c7e692e1d4ac68808fdf1603a6ad5d9f610f51e9909d94"
 dependencies = [
  "ctor",
  "futures-lite 0.1.11",

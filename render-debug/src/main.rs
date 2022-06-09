@@ -51,7 +51,6 @@ fn main() {
 			width: 1480,
 			height: 800,
 		})
-		.with_resizable(false)
 		.build(&event_loop)
 		.unwrap();
 
@@ -64,17 +63,23 @@ fn main() {
 	}))
 	.unwrap();
 
+	let timestamp_query = adapter.features().contains(Features::TIMESTAMP_QUERY);
+
 	let (device, queue) = block_on(adapter.request_device(
 		&DeviceDescriptor {
 			label: Some("Device"),
-			features: Features::default(),
+			features: if timestamp_query {
+				Features::TIMESTAMP_QUERY
+			} else {
+				Features::empty()
+			},
 			limits: Default::default(),
 		},
 		None,
 	))
 	.unwrap();
 
-	let mut profiler = ProfileContext::with_name("GPU", &adapter, &device, &queue, 2);
+	let mut profiler = ProfileContext::with_enabled_and_name("GPU", &adapter, &device, &queue, 2, timestamp_query);
 	let mut ui = Ui::new();
 
 	let size = window.inner_size();
@@ -214,6 +219,7 @@ fn main() {
 						config.width = size.width;
 						config.height = size.height;
 						surface.configure(&device, &config);
+						ui.resize(size.width, size.height);
 					}
 				},
 				WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use geo::LoadError;
+use tracy::wgpu::EncoderProfiler;
 use wgpu::{
 	include_wgsl,
 	BindGroup,
@@ -199,31 +200,42 @@ impl Renderer {
 
 	pub fn render(
 		&mut self, options: &FrameOptions, device: &Device, queue: &Queue, view: &TextureView,
-		encoder: &mut CommandEncoder,
+		encoder: &mut EncoderProfiler,
 	) {
+		tracy::zone!("Map Render");
+
 		if let UploadStatus::Resized = self.cache.populate_tiles(device, encoder, queue, options.range) {
 			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
 		}
 
-		encoder.clear_buffer(self.cache.tile_status(), 0, None);
-		queue.write_buffer(
-			&self.cbuffer,
-			0,
-			&Self::get_cbuffer_data(&self.cache, self.aspect_ratio, options),
-		);
+		{
+			tracy::zone!("Tile Status Clear");
 
-		let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-			label: Some("Map Render Pass"),
-			color_attachments: &[RenderPassColorAttachment {
-				view,
-				resolve_target: None,
-				ops: Operations {
-					load: LoadOp::Clear(Color::BLACK),
-					store: true,
-				},
-			}],
-			depth_stencil_attachment: None,
-		});
+			encoder.clear_buffer(self.cache.tile_status(), 0, None);
+			queue.write_buffer(
+				&self.cbuffer,
+				0,
+				&Self::get_cbuffer_data(&self.cache, self.aspect_ratio, options),
+			);
+		}
+
+		tracy::zone!("Render");
+
+		let mut pass = tracy::wgpu_render_pass!(
+			encoder,
+			RenderPassDescriptor {
+				label: Some("Map Render Pass"),
+				color_attachments: &[RenderPassColorAttachment {
+					view,
+					resolve_target: None,
+					ops: Operations {
+						load: LoadOp::Clear(Color::BLACK),
+						store: true,
+					},
+				}],
+				depth_stencil_attachment: None,
+			}
+		);
 		pass.set_pipeline(&self.pipeline);
 		pass.set_bind_group(0, &self.group, &[]);
 		pass.draw(0..3, 0..1);

@@ -4,6 +4,7 @@ use std::{
 };
 
 use geo::{Dataset, LoadError};
+use tracy::wgpu::EncoderProfiler;
 use wgpu::{
 	include_wgsl,
 	BindGroup,
@@ -113,8 +114,10 @@ impl TileCache {
 	}
 
 	pub fn populate_tiles(
-		&mut self, device: &Device, encoder: &mut CommandEncoder, queue: &Queue, range: Range,
+		&mut self, device: &Device, encoder: &mut EncoderProfiler, queue: &Queue, range: Range,
 	) -> UploadStatus {
+		tracy::zone!("Tile Population");
+
 		if self.atlas.needs_clear(range) {
 			self.clear(range);
 		}
@@ -123,9 +126,15 @@ impl TileCache {
 		let mut ret = UploadStatus::Ok;
 		{
 			let _ = self.tile_status.slice(..).map_async(MapMode::Read);
-			device.poll(Maintain::Wait);
+
+			{
+				tracy::zone!("GPU Readback Sync");
+				device.poll(Maintain::Wait);
+			}
+
 			let buf = self.tile_status.slice(..).get_mapped_range();
 			let used = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u32, buf.len() / 4) };
+
 			'outer: for lon in 0..360 {
 				for lat in 0..180 {
 					let index = (lat * 360 + lon) as usize;
@@ -143,17 +152,21 @@ impl TileCache {
 					let lon = lon as i16 - 180;
 					let lat = lat as i16 - 90;
 					let dataset = &self.atlas.datasets[meta];
-					let tile = if let Some(data) = dataset.get_tile(lat, lon) {
-						match data {
-							Ok(x) => x,
-							Err(e) => {
-								log::error!("Error loading tile: {:?}", e);
-								continue;
-							},
+					let tile = {
+						tracy::zone!("Load Tile");
+
+						if let Some(data) = dataset.get_tile(lat, lon) {
+							match data {
+								Ok(x) => x,
+								Err(e) => {
+									log::error!("Error loading tile: {:?}", e);
+									continue;
+								},
+							}
+						} else {
+							*offset = self.atlas.not_found();
+							continue;
 						}
-					} else {
-						*offset = self.atlas.not_found();
-						continue;
 					};
 
 					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(device, encoder, queue, &tile) {
@@ -176,6 +189,8 @@ impl TileCache {
 		}
 
 		self.tile_status.unmap();
+
+		tracy::zone!("Tile Map Upload");
 
 		queue.write_texture(
 			self.tile_map.as_image_copy(),
@@ -350,8 +365,10 @@ impl Atlas {
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
 
 	fn upload_tile(
-		&mut self, device: &Device, encoder: &mut CommandEncoder, queue: &Queue, tile: &[i16],
+		&mut self, device: &Device, encoder: &mut EncoderProfiler, queue: &Queue, tile: &[i16],
 	) -> Option<TileOffset> {
+		tracy::zone!("Tile Upload");
+
 		let ret = if let Some(tile) = self.collected_tiles.pop() {
 			tile
 		} else {
@@ -394,24 +411,29 @@ impl Atlas {
 		}
 
 		{
+			tracy::zone!("Hillshade");
+
 			queue.write_buffer(
 				&self.cbuffer,
 				self.cbuffer_offset as u64 * 256,
 				&Self::get_cbuffer_data(self.curr_tile_res, ret),
 			);
 
-			let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-				label: Some("Hillshade Pass"),
-				color_attachments: &[RenderPassColorAttachment {
-					view: &self.hillshade_view,
-					resolve_target: None,
-					ops: Operations {
-						load: LoadOp::Load,
-						store: true,
-					},
-				}],
-				depth_stencil_attachment: None,
-			});
+			let mut pass = tracy::wgpu_render_pass!(
+				encoder,
+				RenderPassDescriptor {
+					label: Some("Hillshade Pass"),
+					color_attachments: &[RenderPassColorAttachment {
+						view: &self.hillshade_view,
+						resolve_target: None,
+						ops: Operations {
+							load: LoadOp::Load,
+							store: true,
+						},
+					}],
+					depth_stencil_attachment: None,
+				}
+			);
 
 			pass.set_viewport(
 				ret.x as _,
@@ -440,6 +462,8 @@ impl Atlas {
 	}
 
 	fn collect_tiles(&mut self, used: &[u32], tiles: &mut [TileOffset], start: usize) -> bool {
+		tracy::zone!("Tile GC");
+
 		let mut needed = 1;
 		let mut collected = 0;
 		for (&used, offset) in used[start + 1..].iter().zip(tiles[start + 1..].iter_mut()) {
