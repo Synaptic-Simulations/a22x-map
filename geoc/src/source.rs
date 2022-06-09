@@ -78,7 +78,7 @@ impl Raster {
 				(xl, yt),
 				((xr - xl) as usize, (yb - yt) as usize),
 				(res, res),
-				Some(ResampleAlg::Bilinear),
+				Some(ResampleAlg::Lanczos),
 			)
 			.ok()
 			.map(|buf| buf.data)

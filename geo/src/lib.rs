@@ -34,8 +34,8 @@ use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 /// * [5..7]: The format version, little endian.
 /// * [7..9]: The resolution of the square tile (one side).
 /// * [9..11]: The resolution of height values (multiply with the raw value).
-/// * [11..11 + 360 * 180 * 8 @ tile_end]: 360 * 180 `u64`s that store the offsets of the tile in question (from the end
-///   of the dictionary). If zero, the tile is not present.
+/// * [11..11 + 360 * 180 * 8 @ tile_end]: 360 * 180 `u64`s that store the offsets of the tile in question (from the
+///   beginning of the file). If zero, the tile is not present.
 /// * [tile_end..tile_end + 8]: The size of the decompression dictionary.
 /// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
 /// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
@@ -78,12 +78,13 @@ pub struct Dataset {
 	tile_map: Vec<u64>,
 	dictionary: DecoderDictionary<'static>,
 	data: Mmap,
+	data_offset: usize,
 }
 
 impl Dataset {
-	const DICT_START_OFFSET: usize = 11 + 360 * 180 * 8;
+	const DICT_OFFSET: usize = Self::TILE_MAP_OFFSET + 360 * 180 * 8;
 	const MAGIC: [u8; 5] = [115, 117, 115, 115, 121];
-	const TILE_MAP_START_OFFSET: usize = 11;
+	const TILE_MAP_OFFSET: usize = 11;
 
 	pub fn load(dir: impl Into<PathBuf>) -> Result<Self, LoadError> {
 		let dir = dir.into();
@@ -92,7 +93,7 @@ impl Dataset {
 			Err(LoadError::UnsupportedFormatVersion)
 		} else {
 			let mut file = File::open(dir)?;
-			let mut buffer = Vec::with_capacity(Self::DICT_START_OFFSET + 8);
+			let mut buffer = Vec::with_capacity(Self::DICT_OFFSET + 8);
 			buffer.resize(buffer.capacity(), 0);
 
 			file.read_exact(&mut buffer[0..7])
@@ -115,28 +116,28 @@ impl Dataset {
 				height_resolution,
 			};
 
-			file.read_exact(&mut buffer[0..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET + 8])
+			file.read_exact(&mut buffer[0..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET + 8])
 				.map_err(|_| LoadError::InvalidFileSize)?;
-			let tile_map = buffer[0..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET]
+			let tile_map = buffer[0..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET]
 				.chunks_exact(8)
 				.map(|x| u64::from_le_bytes(x.try_into().unwrap()))
 				.collect();
 			let dict_size = u64::from_le_bytes(
-				buffer[Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET
-					..Self::DICT_START_OFFSET - Self::TILE_MAP_START_OFFSET + 8]
+				buffer[Self::DICT_OFFSET - Self::TILE_MAP_OFFSET..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET + 8]
 					.try_into()
 					.unwrap(),
 			);
 			buffer.resize(dict_size as usize, 0);
 
 			file.read_exact(&mut buffer).map_err(|_| LoadError::InvalidFileSize)?;
-			let offset = Self::DICT_START_OFFSET as u64 + dict_size + 8;
+			let data_offset = Self::DICT_OFFSET + dict_size as usize + 8;
 
 			Ok(Self {
 				metadata,
 				tile_map,
 				dictionary: DecoderDictionary::copy(&buffer),
-				data: unsafe { MmapOptions::new().offset(offset).map(&file)? },
+				data: unsafe { MmapOptions::new().offset(data_offset as _).map(&file)? },
+				data_offset,
 			})
 		}
 	}
@@ -148,34 +149,40 @@ impl Dataset {
 		self.tile_map[index] != 0
 	}
 
-	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Vec<i16>> {
+	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<i16>, std::io::Error>> {
 		let index = map_lat_lon_to_index(lat, lon);
 		let offset = self.tile_map[index] as usize;
 		if offset == 0 {
 			return None;
 		}
 
-		let frame = &self.data[offset..];
+		let frame = &self.data[offset - self.data_offset..];
 
 		let res = self.metadata.resolution as usize;
 		let mut decompressed = Vec::with_capacity(res * res * 2);
 		decompressed.resize(decompressed.capacity(), 0);
 
-		let mut decoder = Decoder::with_prepared_dictionary(frame, &self.dictionary)
-			.expect("Failed to create decoder")
-			.single_frame();
-		decoder.include_magicbytes(false).expect("Failed to set magic bytes");
-		decoder.read_exact(&mut decompressed).expect("Failed to decompress");
+		let mut decoder = match Decoder::with_prepared_dictionary(frame, &self.dictionary) {
+			Ok(x) => x,
+			Err(e) => return Some(Err(e)),
+		}
+		.single_frame();
+		match decoder.include_magicbytes(false) {
+			Ok(x) => x,
+			Err(e) => return Some(Err(e)),
+		}
+		match decoder.read_exact(&mut decompressed) {
+			Ok(x) => x,
+			Err(e) => return Some(Err(e)),
+		}
 
-		Some(
-			decompressed
-				.chunks_exact(2)
-				.map(|x| {
-					let positive_height = u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
-					positive_height as i16 - 500
-				})
-				.collect(),
-		)
+		Some(Ok(decompressed
+			.chunks_exact(2)
+			.map(|x| {
+				let positive_height = u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
+				positive_height as i16 - 500
+			})
+			.collect()))
 	}
 }
 
@@ -271,7 +278,7 @@ impl DatasetBuilder {
 
 		let mut locked = self.locked.write().unwrap();
 
-		locked.file.seek(SeekFrom::Start(Dataset::TILE_MAP_START_OFFSET as _))?;
+		locked.file.seek(SeekFrom::Start(Dataset::TILE_MAP_OFFSET as _))?;
 		let slice = unsafe { std::slice::from_raw_parts(locked.tile_map.as_ptr() as _, locked.tile_map.len() * 8) };
 		locked.file.write_all(slice)?;
 
@@ -285,7 +292,7 @@ impl DatasetBuilder {
 	fn write_to_file(
 		file: &mut File, metadata: TileMetadata, tile_map: &[u64], data: &[u8],
 	) -> Result<(), std::io::Error> {
-		let mut header = [0; Dataset::TILE_MAP_START_OFFSET];
+		let mut header = [0; Dataset::TILE_MAP_OFFSET];
 		header[0..5].copy_from_slice(&Dataset::MAGIC);
 		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
 		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());

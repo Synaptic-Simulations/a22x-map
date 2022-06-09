@@ -36,7 +36,10 @@ use wgpu::{
 	VertexState,
 };
 
-use crate::{range::Range, tile_cache::TileCache};
+use crate::{
+	range::Range,
+	tile_cache::{TileCache, UploadStatus},
+};
 
 pub mod range;
 mod tile_cache;
@@ -198,7 +201,7 @@ impl Renderer {
 		&mut self, options: &FrameOptions, device: &Device, queue: &Queue, view: &TextureView,
 		encoder: &mut CommandEncoder,
 	) {
-		if self.cache.populate_tiles(device, encoder, queue, options.range) {
+		if let UploadStatus::Resized = self.cache.populate_tiles(device, encoder, queue, options.range) {
 			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
 		}
 
@@ -226,9 +229,7 @@ impl Renderer {
 		pass.draw(0..3, 0..1);
 	}
 
-	pub fn resize(&mut self, device: &Device, width: u32, height: u32) {
-		self.aspect_ratio = width as f32 / height as f32;
-	}
+	pub fn resize(&mut self, width: u32, height: u32) { self.aspect_ratio = width as f32 / height as f32; }
 
 	fn make_bind_group(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache) -> BindGroup {
 		device.create_bind_group(&BindGroupDescriptor {

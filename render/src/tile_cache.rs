@@ -53,6 +53,12 @@ use wgpu::{
 
 use crate::range::{Range, RANGES, RANGE_TO_DEGREES};
 
+pub enum UploadStatus {
+	Ok,
+	Resized,
+	AtlasFull,
+}
+
 #[repr(C)]
 #[derive(Copy, Clone, Default, PartialEq, Eq)]
 struct TileOffset {
@@ -108,13 +114,13 @@ impl TileCache {
 
 	pub fn populate_tiles(
 		&mut self, device: &Device, encoder: &mut CommandEncoder, queue: &Queue, range: Range,
-	) -> bool {
+	) -> UploadStatus {
 		if self.atlas.needs_clear(range) {
 			self.clear(range);
 		}
 		let meta = self.atlas.lods[range as usize];
 
-		let mut ret = false;
+		let mut ret = UploadStatus::Ok;
 		{
 			let _ = self.tile_status.slice(..).map_async(MapMode::Read);
 			device.poll(Maintain::Wait);
@@ -138,7 +144,13 @@ impl TileCache {
 					let lat = lat as i16 - 90;
 					let dataset = &self.atlas.datasets[meta];
 					let tile = if let Some(data) = dataset.get_tile(lat, lon) {
-						data
+						match data {
+							Ok(x) => x,
+							Err(e) => {
+								log::error!("Error loading tile: {:?}", e);
+								continue;
+							},
+						}
 					} else {
 						*offset = self.atlas.not_found();
 						continue;
@@ -151,9 +163,12 @@ impl TileCache {
 							.upload_tile(device, encoder, queue, &tile)
 							.expect("Tile GC returned None when it had to be Some")
 					} else {
-						self.atlas.recreate_atlas(device);
-						self.tiles.fill(self.atlas.unloaded());
-						ret = true;
+						if self.atlas.recreate_atlas(device) {
+							self.tiles.fill(self.atlas.unloaded());
+							ret = UploadStatus::Resized;
+						} else {
+							ret = UploadStatus::AtlasFull;
+						}
 						break 'outer;
 					};
 				}
@@ -442,10 +457,11 @@ impl Atlas {
 		collected >= needed
 	}
 
-	fn recreate_atlas(&mut self, device: &Device) {
+	fn recreate_atlas(&mut self, device: &Device) -> bool {
 		let limits = device.limits();
 		if self.width == limits.max_texture_dimension_2d && self.height == limits.max_texture_dimension_2d {
-			panic!("Atlas is already the maximum size");
+			log::error!("Atlas is too large to fit in device limits");
+			return false;
 		}
 
 		let width = (self.width * 2).min(limits.max_texture_dimension_2d);
@@ -461,6 +477,8 @@ impl Atlas {
 		self.width = width;
 		self.height = height;
 		self.curr_tile_res = 0;
+
+		true
 	}
 
 	fn make_atlas(device: &Device, width: u32, height: u32) -> (Texture, TextureView, Texture, TextureView) {
