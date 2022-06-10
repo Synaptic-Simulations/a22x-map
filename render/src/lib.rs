@@ -18,7 +18,6 @@ use wgpu::{
 	BufferUsages,
 	Color,
 	ColorTargetState,
-	CommandEncoder,
 	Device,
 	FragmentState,
 	LoadOp,

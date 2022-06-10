@@ -1010,7 +1010,7 @@ name = "geo"
 version = "0.1.0"
 dependencies = [
  "bitpacking",
- "ctrlc",
+ "byteorder",
  "memmap2 0.5.4",
  "tracy_full",
  "zstd",

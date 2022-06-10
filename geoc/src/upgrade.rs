@@ -33,7 +33,7 @@ pub fn upgrade(upgrade: Upgrade) {
 		|lat, lon, builder| {
 			source
 				.get_tile(lat, lon)
-				.map(|data| builder.add_tile(lat, lon, data))
+				.map(|data| builder.add_tile(lat, lon, data?))
 				.transpose()?;
 			Ok(())
 		},

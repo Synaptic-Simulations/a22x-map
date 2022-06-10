@@ -12,5 +12,5 @@ walkdir = "2.3.2"
 geo = { path = "../geo" }
 
 log = "0.4.17"
-tracy = { package = "tracy_full", version = "1.2.0" }
+tracy = { package = "tracy_full", version = "1.2.0", features = ["wgpu"] }
 wgpu = "0.12.0"

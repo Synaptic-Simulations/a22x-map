@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 bitpacking = "0.8"
-ctrlc = "3.2.2"
+byteorder = "1.4.3"
 memmap2 = "0.5.3"
-tracy = { package = "tracy_full", version = "1.2.0", features = ["wgpu"] }
+tracy = { package = "tracy_full", version = "1.2.0" }
 zstd = { version = "*", features = ["experimental"] }

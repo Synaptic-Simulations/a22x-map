@@ -21,7 +21,6 @@ use wgpu::{
 	BufferDescriptor,
 	BufferUsages,
 	ColorTargetState,
-	CommandEncoder,
 	Device,
 	Extent3d,
 	FragmentState,

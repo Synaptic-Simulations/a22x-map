@@ -64,7 +64,7 @@ pub fn for_tile_in_output(
 		});
 
 		print!("\r{}/{}", counter.load(Ordering::Relaxed), tiles);
-		(0..180 * 360).into_par_iter().for_each(|index| {
+		(0..tiles).into_par_iter().for_each(|index| {
 			tracy::zone!("Process tile");
 			if had_error.load(Ordering::Acquire) || was_quit.load(Ordering::Acquire) {
 				return;
