@@ -19,11 +19,11 @@ fn pixel(vertex: VertexOutput) -> [[location(0)]] vec4<f32> {
     let duv = 1.0 / vec2<f32>(textureDimensions(tex, 0));
 
     var sum: vec4<f32> = vec4<f32>(0.0);
-    for (var x = 0; x <= 0; x = x + 1) {
-        for (var y = 0; y <= 0; y = y + 1) {
+    for (var x = -1; x <= 1; x = x + 1) {
+        for (var y = -1; y <= 1; y = y + 1) {
             sum = sum + textureSample(tex, s, vertex.uv + vec2<f32>(f32(x) * duv.x, f32(y) * duv.y));
         }
     }
 
-    return sum / 1.0;
+    return sum / 9.0;
 }

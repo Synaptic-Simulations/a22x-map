@@ -1,54 +1,26 @@
-use std::{
-	num::{NonZeroU32, NonZeroU64},
-	path::PathBuf,
-};
+use std::{num::NonZeroU32, path::PathBuf};
 
 use geo::{Dataset, LoadError};
-use tracy::wgpu::EncoderProfiler;
 use wgpu::{
-	include_wgsl,
-	BindGroup,
-	BindGroupDescriptor,
-	BindGroupEntry,
-	BindGroupLayout,
-	BindGroupLayoutDescriptor,
-	BindGroupLayoutEntry,
-	BindingResource,
-	BindingType,
 	Buffer,
-	BufferBinding,
-	BufferBindingType,
 	BufferDescriptor,
 	BufferUsages,
-	ColorTargetState,
 	Device,
 	Extent3d,
-	FragmentState,
 	ImageCopyTexture,
 	ImageDataLayout,
-	LoadOp,
 	Maintain,
 	MapMode,
-	Operations,
 	Origin3d,
-	PipelineLayoutDescriptor,
 	Queue,
-	RenderPassColorAttachment,
-	RenderPassDescriptor,
-	RenderPipeline,
-	RenderPipelineDescriptor,
-	ShaderStages,
 	Texture,
 	TextureAspect,
 	TextureDescriptor,
 	TextureDimension,
 	TextureFormat,
-	TextureSampleType,
 	TextureUsages,
 	TextureView,
 	TextureViewDescriptor,
-	TextureViewDimension,
-	VertexState,
 };
 
 use crate::range::{Range, RANGES, RANGE_TO_DEGREES};
@@ -112,9 +84,7 @@ impl TileCache {
 		})
 	}
 
-	pub fn populate_tiles(
-		&mut self, device: &Device, encoder: &mut EncoderProfiler, queue: &Queue, range: Range,
-	) -> UploadStatus {
+	pub fn populate_tiles(&mut self, device: &Device, queue: &Queue, range: Range) -> UploadStatus {
 		tracy::zone!("Tile Population");
 
 		if self.atlas.needs_clear(range) {
@@ -168,11 +138,11 @@ impl TileCache {
 						}
 					};
 
-					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(device, encoder, queue, &tile) {
+					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(queue, &tile) {
 						offset
 					} else if self.atlas.collect_tiles(used, &mut self.tiles, index) {
 						self.atlas
-							.upload_tile(device, encoder, queue, &tile)
+							.upload_tile(queue, &tile)
 							.expect("Tile GC returned None when it had to be Some")
 					} else {
 						if self.atlas.recreate_atlas(device) {
@@ -239,17 +209,10 @@ impl TileCache {
 struct Atlas {
 	datasets: Vec<Dataset>,
 	lods: Vec<usize>,
-	layout_0: BindGroupLayout,
-	layout_1: BindGroupLayout,
-	pipeline: RenderPipeline,
-	group_0: BindGroup,
-	group_1: BindGroup,
 	atlas: Texture,
 	view: TextureView,
 	hillshade: Texture,
 	hillshade_view: TextureView,
-	cbuffer: Buffer,
-	cbuffer_offset: u32,
 	width: u32,
 	height: u32,
 	curr_tile_res: u32,
@@ -266,80 +229,19 @@ impl Atlas {
 			.map(|&angle| Self::get_lod_for_range(angle, height, &datasets))
 			.collect();
 
-		let layout_0 = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-			label: Some("Hillshade Layout 0"),
-			entries: &[BindGroupLayoutEntry {
-				binding: 0,
-				visibility: ShaderStages::FRAGMENT,
-				ty: BindingType::Texture {
-					sample_type: TextureSampleType::Sint,
-					view_dimension: TextureViewDimension::D2,
-					multisampled: false,
-				},
-				count: None,
-			}],
-		});
-		let layout_1 = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-			label: Some("Hillshade Layout 1"),
-			entries: &[BindGroupLayoutEntry {
-				binding: 0,
-				visibility: ShaderStages::FRAGMENT,
-				ty: BindingType::Buffer {
-					ty: BufferBindingType::Uniform,
-					has_dynamic_offset: true,
-					min_binding_size: Some(NonZeroU64::new(256).unwrap()),
-				},
-				count: None,
-			}],
-		});
-
-		let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-			label: Some("Hillshade Pipeline"),
-			layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-				label: Some("Hillshade Layout"),
-				bind_group_layouts: &[&layout_0, &layout_1],
-				push_constant_ranges: &[],
-			})),
-			vertex: VertexState {
-				module: &device.create_shader_module(&include_wgsl!("shaders/fullscreen.wgsl")),
-				entry_point: "main",
-				buffers: &[],
-			},
-			primitive: Default::default(),
-			depth_stencil: None,
-			multisample: Default::default(),
-			fragment: Some(FragmentState {
-				module: &device.create_shader_module(&include_wgsl!("shaders/hillshade.wgsl")),
-				entry_point: "main",
-				targets: &[ColorTargetState::from(TextureFormat::R8Unorm)],
-			}),
-			multiview: None,
-		});
-
 		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &datasets);
 		let limits = device.limits();
 		let width = width.min(limits.max_texture_dimension_2d);
 		let height = height.min(limits.max_texture_dimension_2d);
 		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
-		let group_0 = Self::make_group_0(device, &layout_0, &view);
-
-		let cbuffer = Self::make_cbuffer(device, 256);
-		let group_1 = Self::make_group_1(device, &layout_1, &cbuffer);
 
 		Ok(Self {
 			datasets,
 			lods,
-			layout_0,
-			layout_1,
-			pipeline,
-			group_0,
-			group_1,
 			atlas,
 			view,
 			hillshade,
 			hillshade_view,
-			cbuffer,
-			cbuffer_offset: 0,
 			width,
 			height,
 			curr_tile_res: 0,
@@ -349,7 +251,6 @@ impl Atlas {
 	}
 
 	fn needs_clear(&mut self, range: Range) -> bool {
-		self.cbuffer_offset = 0;
 		let res = self.datasets[self.lods[range as usize]].metadata().resolution;
 		let ret = res != self.curr_tile_res as _;
 		ret
@@ -363,9 +264,7 @@ impl Atlas {
 
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
 
-	fn upload_tile(
-		&mut self, device: &Device, encoder: &mut EncoderProfiler, queue: &Queue, tile: &[i16],
-	) -> Option<TileOffset> {
+	fn upload_tile(&mut self, queue: &Queue, tile: &[i16]) -> Option<TileOffset> {
 		tracy::zone!("Tile Upload");
 
 		let ret = if let Some(tile) = self.collected_tiles.pop() {
@@ -402,51 +301,6 @@ impl Atlas {
 				depth_or_array_layers: 1,
 			},
 		);
-
-		if self.cbuffer_offset == 256 {
-			self.cbuffer_offset = 0;
-			self.cbuffer = Self::make_cbuffer(device, 256);
-			self.group_1 = Self::make_group_1(device, &self.layout_1, &self.cbuffer);
-		}
-
-		{
-			tracy::zone!("Hillshade");
-
-			queue.write_buffer(
-				&self.cbuffer,
-				self.cbuffer_offset as u64 * 256,
-				&Self::get_cbuffer_data(self.curr_tile_res, ret),
-			);
-
-			let mut pass = (**encoder).begin_render_pass(&RenderPassDescriptor {
-				label: Some("Hillshade Pass"),
-				color_attachments: &[RenderPassColorAttachment {
-					view: &self.hillshade_view,
-					resolve_target: None,
-					ops: Operations {
-						load: LoadOp::Load,
-						store: true,
-					},
-				}],
-				depth_stencil_attachment: None,
-			});
-
-			pass.set_viewport(
-				ret.x as _,
-				ret.y as _,
-				self.curr_tile_res as _,
-				self.curr_tile_res as _,
-				0.0,
-				1.0,
-			);
-			pass.set_scissor_rect(ret.x as _, ret.y as _, self.curr_tile_res as _, self.curr_tile_res as _);
-
-			pass.set_pipeline(&self.pipeline);
-			pass.set_bind_group(0, &self.group_0, &[]);
-			pass.set_bind_group(1, &self.group_1, &[self.cbuffer_offset * 256]);
-			self.cbuffer_offset += 1;
-			pass.draw(0..3, 0..1);
-		}
 
 		self.curr_offset.x += self.curr_tile_res;
 		if self.curr_offset.x + self.curr_tile_res >= self.width {
@@ -487,8 +341,6 @@ impl Atlas {
 		let width = (self.width * 2).min(limits.max_texture_dimension_2d);
 		let height = (self.height * 2).min(limits.max_texture_dimension_2d);
 		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
-
-		self.group_0 = Self::make_group_0(device, &self.layout_0, &view);
 
 		self.atlas = atlas;
 		self.view = view;
@@ -536,56 +388,9 @@ impl Atlas {
 		(atlas, view, hillshade, hillshade_view)
 	}
 
-	fn make_cbuffer(device: &Device, tiles: u32) -> Buffer {
-		device.create_buffer(&BufferDescriptor {
-			label: Some("Heightmap Uniform"),
-			size: (tiles * 256) as _,
-			usage: BufferUsages::UNIFORM | BufferUsages::COPY_DST,
-			mapped_at_creation: false,
-		})
-	}
-
-	fn make_group_0(device: &Device, layout: &BindGroupLayout, atlas: &TextureView) -> BindGroup {
-		device.create_bind_group(&BindGroupDescriptor {
-			label: Some("Heightmap Group 0"),
-			layout,
-			entries: &[BindGroupEntry {
-				binding: 0,
-				resource: BindingResource::TextureView(atlas),
-			}],
-		})
-	}
-
-	fn make_group_1(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer) -> BindGroup {
-		device.create_bind_group(&BindGroupDescriptor {
-			label: Some("Heightmap Group 1"),
-			layout,
-			entries: &[BindGroupEntry {
-				binding: 0,
-				resource: BindingResource::Buffer(BufferBinding {
-					buffer: cbuffer,
-					offset: 0,
-					size: Some(NonZeroU64::new(256).unwrap()),
-				}),
-			}],
-		})
-	}
-
 	fn unloaded(&self) -> TileOffset { TileOffset { x: 0, y: self.height } }
 
 	fn not_found(&self) -> TileOffset { TileOffset { x: self.width, y: 0 } }
-
-	fn get_cbuffer_data(tile_size: u32, tile_offset: TileOffset) -> [u8; 32] {
-		let mut data = [0u8; 32];
-
-		data[0..4].copy_from_slice(&2.3561944902f32.to_le_bytes());
-		data[4..8].copy_from_slice(&std::f32::consts::FRAC_PI_4.to_le_bytes());
-		data[8..12].copy_from_slice(&tile_size.to_le_bytes());
-		data[16..20].copy_from_slice(&tile_offset.x.to_le_bytes());
-		data[20..24].copy_from_slice(&tile_offset.y.to_le_bytes());
-
-		data
-	}
 
 	fn get_lod_for_range(vertical_angle: f32, height: f32, datasets: &[Dataset]) -> usize {
 		for (lod, dataset) in datasets.iter().enumerate().rev() {

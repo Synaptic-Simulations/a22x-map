@@ -203,7 +203,7 @@ impl Renderer {
 	) {
 		tracy::zone!("Map Render");
 
-		if let UploadStatus::Resized = self.cache.populate_tiles(device, encoder, queue, options.range) {
+		if let UploadStatus::Resized = self.cache.populate_tiles(device, queue, options.range) {
 			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
 		}
 
