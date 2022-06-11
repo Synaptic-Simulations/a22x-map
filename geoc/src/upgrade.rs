@@ -16,7 +16,7 @@ pub struct Upgrade {
 }
 
 pub fn upgrade(upgrade: Upgrade) {
-	let source = match Dataset::load(upgrade.input) {
+	let source = match Dataset::load(&upgrade.input) {
 		Ok(source) => source,
 		Err(err) => {
 			eprintln!("{}", err);

@@ -259,7 +259,7 @@ struct Atlas {
 
 impl Atlas {
 	fn new(device: &Device, aspect_ratio: f32, height: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
-		let datasets: Result<Vec<_>, LoadError> = datasets.into_iter().map(|dir| Dataset::load(dir)).collect();
+		let datasets: Result<Vec<_>, LoadError> = datasets.into_iter().map(|dir| Dataset::load(&dir)).collect();
 		let datasets = datasets?;
 		let lods: Vec<_> = RANGE_TO_DEGREES
 			.iter()
@@ -418,21 +418,18 @@ impl Atlas {
 				&Self::get_cbuffer_data(self.curr_tile_res, ret),
 			);
 
-			let mut pass = tracy::wgpu_render_pass!(
-				encoder,
-				RenderPassDescriptor {
-					label: Some("Hillshade Pass"),
-					color_attachments: &[RenderPassColorAttachment {
-						view: &self.hillshade_view,
-						resolve_target: None,
-						ops: Operations {
-							load: LoadOp::Load,
-							store: true,
-						},
-					}],
-					depth_stencil_attachment: None,
-				}
-			);
+			let mut pass = (**encoder).begin_render_pass(&RenderPassDescriptor {
+				label: Some("Hillshade Pass"),
+				color_attachments: &[RenderPassColorAttachment {
+					view: &self.hillshade_view,
+					resolve_target: None,
+					ops: Operations {
+						load: LoadOp::Load,
+						store: true,
+					},
+				}],
+				depth_stencil_attachment: None,
+			});
 
 			pass.set_viewport(
 				ret.x as _,

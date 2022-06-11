@@ -1,18 +1,14 @@
 //! A library for working with the `a22x` map's terrain format.
 
 use std::{
-	collections::HashSet,
 	error::Error,
 	fmt::{Debug, Display},
-	fs::{File, OpenOptions},
-	io::{Read, Seek, SeekFrom, Write},
-	path::{Path, PathBuf},
-	sync::RwLock,
 };
 
-use byteorder::{ByteOrder, LittleEndian};
-use memmap2::{Mmap, MmapOptions};
-use zstd::{dict::DecoderDictionary, Decoder, Encoder};
+mod dataset;
+pub use dataset::*;
+mod builder;
+pub use builder::*;
 
 /// ## Format version 1
 /// Metadata file (_meta):
@@ -31,6 +27,7 @@ use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 /// Format versions 1 and 2 are unsupported.
 ///
 /// ## Format version 3
+/// Everything is little-endian.
 /// There is a single file:
 /// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
 /// * [5..7]: The format version, little endian.
@@ -45,7 +42,21 @@ use zstd::{dict::DecoderDictionary, Decoder, Encoder};
 ///
 /// Each tile is laid out in row-major order. The origin (lowest latitude and longitude) is the bottom-left.
 /// A special height value of `-500` indicates that the pixel is covered by water.
-pub const FORMAT_VERSION: u16 = 3;
+///
+/// # Format version 4
+/// Largely the same as version 3, but tiles the data in each tile.
+/// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
+/// * [5..7]: The format version, little endian.
+/// * [7..9]: The resolution of the square tile (one side).
+/// * [9..11]: The resolution of height values (multiply with the raw value).
+/// * [11..13]: The size of each mini-tile.
+/// * [13..13 + 360 * 180 * 8 @ tile_end]: 360 * 180 `u64`s that store the offsets of the tile in question (from the
+///   beginning of the file). If zero, the tile is not present.
+/// * [tile_end..tile_end + 8] @ decomp_dict_size: The size of the decompression dictionary.
+/// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
+/// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
+///   next tile.
+pub const FORMAT_VERSION: u16 = 4;
 
 pub enum LoadError {
 	InvalidFileSize,
@@ -75,340 +86,17 @@ impl From<std::io::Error> for LoadError {
 	fn from(x: std::io::Error) -> Self { Self::Io(x) }
 }
 
-pub struct Dataset {
-	metadata: TileMetadata,
-	tile_map: Vec<u64>,
-	dictionary: DecoderDictionary<'static>,
-	data: Mmap,
-	data_offset: usize,
-}
-
-impl Dataset {
-	const DICT_OFFSET: usize = Self::TILE_MAP_OFFSET + 360 * 180 * 8;
-	const MAGIC: [u8; 5] = [115, 117, 115, 115, 121];
-	const TILE_MAP_OFFSET: usize = 11;
-
-	pub fn load(dir: impl Into<PathBuf>) -> Result<Self, LoadError> {
-		let dir = dir.into();
-		let meta = std::fs::metadata(&dir)?;
-		if meta.is_dir() {
-			Err(LoadError::UnsupportedFormatVersion)
-		} else {
-			let mut file = File::open(dir)?;
-			let mut buffer = Vec::with_capacity(Self::DICT_OFFSET + 8);
-			buffer.resize(buffer.capacity(), 0);
-
-			file.read_exact(&mut buffer[0..7])
-				.map_err(|_| LoadError::InvalidFileSize)?;
-			if buffer[0..5] != Self::MAGIC {
-				return Err(LoadError::InvalidMagic);
-			}
-			let version = u16::from_le_bytes(buffer[5..7].try_into().unwrap());
-			if version != FORMAT_VERSION {
-				return Err(LoadError::UnsupportedFormatVersion);
-			}
-
-			file.read_exact(&mut buffer[0..4])
-				.map_err(|_| LoadError::InvalidFileSize)?;
-			let resolution = u16::from_le_bytes(buffer[0..2].try_into().unwrap());
-			let height_resolution = u16::from_le_bytes(buffer[2..4].try_into().unwrap());
-			let metadata = TileMetadata {
-				version,
-				resolution,
-				height_resolution,
-			};
-
-			file.read_exact(&mut buffer[0..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET + 8])
-				.map_err(|_| LoadError::InvalidFileSize)?;
-			let tile_map = buffer[0..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET]
-				.chunks_exact(8)
-				.map(|x| u64::from_le_bytes(x.try_into().unwrap()))
-				.collect();
-			let dict_size = u64::from_le_bytes(
-				buffer[Self::DICT_OFFSET - Self::TILE_MAP_OFFSET..Self::DICT_OFFSET - Self::TILE_MAP_OFFSET + 8]
-					.try_into()
-					.unwrap(),
-			);
-			buffer.resize(dict_size as usize, 0);
-
-			file.read_exact(&mut buffer).map_err(|_| LoadError::InvalidFileSize)?;
-			let data_offset = Self::DICT_OFFSET + dict_size as usize + 8;
-
-			Ok(Self {
-				metadata,
-				tile_map,
-				dictionary: DecoderDictionary::copy(&buffer),
-				data: unsafe { MmapOptions::new().offset(data_offset as _).map(&file)? },
-				data_offset,
-			})
-		}
-	}
-
-	pub fn metadata(&self) -> TileMetadata { self.metadata }
-
-	pub fn tile_exists(&self, lat: i16, lon: i16) -> bool {
-		let index = map_lat_lon_to_index(lat, lon);
-		self.tile_map[index] != 0
-	}
-
-	pub fn tile_count(&self) -> usize { self.tile_map.iter().filter(|&&x| x != 0).count() }
-
-	pub fn get_tile_and_compressed_size(
-		&self, lat: i16, lon: i16,
-	) -> Option<Result<(Vec<i16>, usize), std::io::Error>> {
-		tracy::zone!("Get Tile");
-
-		let index = map_lat_lon_to_index(lat, lon);
-		let offset = self.tile_map[index] as usize;
-		if offset == 0 {
-			return None;
-		}
-
-		let frame = &self.data[offset - self.data_offset..];
-
-		let res = self.metadata.resolution as usize;
-		let mut decompressed = Vec::with_capacity(res * res * 2);
-		decompressed.resize(decompressed.capacity(), 0);
-
-		let remaining = {
-			tracy::zone!("Decompress");
-
-			let mut decoder = match Decoder::with_prepared_dictionary(frame, &self.dictionary) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			.single_frame();
-			match decoder.include_magicbytes(false) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			match decoder.read_exact(&mut decompressed) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			decoder.finish()
-		};
-		let compressed_size = frame.len() - remaining.len();
-
-		Some(Ok((
-			decompressed
-				.chunks_exact(2)
-				.map(|x| {
-					let positive_height = u16::from_le_bytes(x.try_into().unwrap()) * self.metadata.height_resolution;
-					positive_height as i16 - 500
-				})
-				.collect(),
-			compressed_size,
-		)))
-	}
-
-	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<i16>, std::io::Error>> {
-		self.get_tile_and_compressed_size(lat, lon).map(|x| x.map(|(x, _)| x))
-	}
-
-	pub fn get_tile_compressed_size(&self, lat: i16, lon: i16) -> usize {
-		let index = map_lat_lon_to_index(lat, lon);
-		let offset = self.tile_map[index] as usize;
-		if offset == 0 {
-			return 0;
-		}
-
-		let frame = &self.data[offset - self.data_offset..];
-		Self::tile_frame_size(frame)
-	}
-
-	pub fn get_orphaned_tiles(&self, mut progress: impl FnMut(usize, usize)) -> Vec<(u64, u64)> {
-		let mut ret = Vec::new();
-		let mut offset = 0;
-
-		let mut offsets: HashSet<_> = self.tile_map.iter().copied().filter(|&x| x != 0).collect();
-
-		while !self.data[offset..].is_empty() {
-			progress(offset, self.data.len());
-
-			let data = &self.data[offset..];
-			let tile_offset = (offset + self.data_offset) as u64;
-			let size = Self::tile_frame_size(&data);
-
-			if offsets.contains(&tile_offset) {
-				offsets.remove(&tile_offset);
-			} else {
-				ret.push((offset as u64, size as u64));
-			}
-
-			offset += size;
-		}
-
-		ret
-	}
-
-	fn tile_frame_size(frame: &[u8]) -> usize {
-		let header_descriptor = frame[0];
-		let dict_id = header_descriptor & 0b11;
-		let single_segment = (header_descriptor >> 5) & 1;
-		let size_id = header_descriptor >> 6;
-		let header_size = 1
-			+ (1 - single_segment)
-			+ match dict_id {
-				0 => 0,
-				1 => 1,
-				2 => 2,
-				3 => 4,
-				_ => unreachable!(),
-			} + match size_id {
-			0 => single_segment,
-			1 => 2,
-			2 => 4,
-			3 => 8,
-			_ => unreachable!(),
-		};
-
-		let mut offset = header_size as usize;
-		loop {
-			let block = &frame[offset..];
-			let header = LittleEndian::read_u24(&block[0..3]);
-
-			let block_content_size = header >> 3;
-			let last = header & 1;
-			let block_ty = (header >> 1) & 0b11;
-
-			let block_size = 3 + match block_ty {
-				0 => block_content_size,
-				1 => 1,
-				2 => block_content_size,
-				_ => unreachable!(),
-			} as usize;
-
-			offset += block_size;
-
-			if last == 1 {
-				break;
-			}
-		}
-
-		offset
-	}
-}
-
-struct Locked {
-	tile_map: Vec<u64>,
-	file: File,
-}
-
-pub struct DatasetBuilder {
-	compression_level: i8,
-	metadata: TileMetadata,
-	locked: RwLock<Locked>,
-}
-
-impl DatasetBuilder {
-	pub fn from_dataset(path: &Path, dataset: Dataset, compression_level: i8) -> Result<Self, std::io::Error> {
-		let metadata = dataset.metadata;
-		let tile_map = dataset.tile_map;
-		drop(dataset.data);
-
-		Ok(Self {
-			compression_level,
-			metadata,
-			locked: RwLock::new(Locked {
-				tile_map,
-				file: OpenOptions::new().write(true).read(true).open(path)?,
-			}),
-		})
-	}
-
-	pub fn new(path: &Path, metadata: TileMetadata, compression_level: i8) -> Result<Self, std::io::Error> {
-		assert_eq!(
-			metadata.version, FORMAT_VERSION,
-			"Can only build datasets with version {}",
-			FORMAT_VERSION
-		);
-
-		let tile_map = vec![0; 360 * 180];
-
-		let mut file = File::create(path)?;
-		Self::write_to_file(&mut file, metadata, &tile_map, &[])?;
-
-		Ok(Self {
-			compression_level,
-			metadata,
-			locked: RwLock::new(Locked { tile_map, file }),
-		})
-	}
-
-	pub fn tile_exists(&self, lat: i16, lon: i16) -> bool {
-		let index = map_lat_lon_to_index(lat, lon);
-		self.locked.read().unwrap().tile_map[index] != 0
-	}
-
-	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
-		let data: Vec<_> = {
-			tracy::zone!("Map height");
-
-			data.iter()
-				.flat_map(|x| {
-					let positive_height = x + 500;
-					let height = positive_height as f32 / self.metadata.height_resolution as f32;
-					(height.round() as u16).to_le_bytes()
-				})
-				.collect()
-		};
-
-		let mut temp = Vec::new();
-		{
-			tracy::zone!("Compress");
-
-			let mut encoder = Encoder::new(&mut temp, self.compression_level as _).expect("Compression error");
-			encoder.set_pledged_src_size(Some(data.len() as u64)).unwrap();
-			encoder.include_magicbytes(false).unwrap();
-			encoder.include_checksum(false).unwrap();
-			encoder.long_distance_matching(true).unwrap();
-
-			encoder.write_all(&data).unwrap();
-			encoder.finish().unwrap();
-		}
-
-		tracy::zone!("Write");
-
-		let index = map_lat_lon_to_index(lat, lon);
-		let mut locked = self.locked.write().unwrap();
-		let offset = locked.file.seek(SeekFrom::End(0))?;
-		locked.tile_map[index] = offset;
-		locked.file.write_all(&temp)
-	}
-
-	pub fn flush(&self) -> Result<(), std::io::Error> {
-		tracy::zone!("Flush");
-
-		let mut locked = self.locked.write().unwrap();
-
-		locked.file.seek(SeekFrom::Start(Dataset::TILE_MAP_OFFSET as _))?;
-		let slice = unsafe { std::slice::from_raw_parts(locked.tile_map.as_ptr() as _, locked.tile_map.len() * 8) };
-		locked.file.write_all(slice)?;
-
-		locked.file.flush()?;
-
-		Ok(())
-	}
-
-	pub fn finish(self) -> Result<(), std::io::Error> { self.flush() }
-
-	fn write_to_file(
-		file: &mut File, metadata: TileMetadata, tile_map: &[u64], data: &[u8],
-	) -> Result<(), std::io::Error> {
-		let mut header = [0; Dataset::TILE_MAP_OFFSET];
-		header[0..5].copy_from_slice(&Dataset::MAGIC);
-		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
-		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());
-		header[9..11].copy_from_slice(&metadata.height_resolution.to_le_bytes());
-
-		file.write_all(&header)?;
-		file.write_all(&0u64.to_le_bytes())?;
-		file.write_all(unsafe { std::slice::from_raw_parts(tile_map.as_ptr() as _, tile_map.len() * 8) })?;
-		file.write_all(&data)?;
-
-		Ok(())
-	}
+#[derive(Copy, Clone, Eq, PartialEq)]
+#[repr(C)]
+pub struct TileMetadata {
+	/// The file format version.
+	pub version: u16,
+	/// The length of the side of the square tile.
+	pub resolution: u16,
+	/// The multiplier for the raw stored values.
+	pub height_resolution: u16,
+	/// The resolution of the mini-tiles inside each tile.
+	pub tiling: u16,
 }
 
 pub fn map_lat_lon_to_index(lat: i16, lon: i16) -> usize {
@@ -426,15 +114,4 @@ pub fn map_index_to_lat_lon(index: usize) -> (i16, i16) {
 	let lat = (index / 360) as i16 - 90;
 	let lon = (index % 360) as i16 - 180;
 	(lat, lon)
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-#[repr(C)]
-pub struct TileMetadata {
-	/// The file format version.
-	pub version: u16,
-	/// The length of the side of the square tile.
-	pub resolution: u16,
-	/// The multiplier for the raw stored values.
-	pub height_resolution: u16,
 }

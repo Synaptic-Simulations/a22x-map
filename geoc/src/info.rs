@@ -32,7 +32,7 @@ impl Display for Size {
 }
 
 pub fn info(info: Info) {
-	let dataset = match Dataset::load(info.input) {
+	let dataset = match Dataset::load(&info.input) {
 		Ok(x) => x,
 		Err(err) => {
 			eprintln!("dataset could not be loaded: {}", err);
@@ -45,6 +45,7 @@ pub fn info(info: Info) {
 	println!("  Version: {}", metadata.version);
 	println!("  Resolution: {}", metadata.resolution);
 	println!("  Height resolution: {}", metadata.height_resolution);
+	println!("  Tiling: {}", metadata.tiling);
 
 	println!();
 
