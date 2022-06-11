@@ -6,6 +6,7 @@ use geo::{Dataset, TileMetadata, FORMAT_VERSION};
 use crate::common::for_tile_in_output;
 
 #[derive(Args)]
+/// Upgrade a dataset to the latest format version.
 pub struct Upgrade {
 	input: PathBuf,
 	#[clap(short = 'o', long = "out", default_value = "output")]

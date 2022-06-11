@@ -9,6 +9,7 @@ use geo::{map_index_to_lat_lon, Dataset};
 use rayon::prelude::*;
 
 #[derive(Args)]
+/// Give information about the dataset.
 pub struct Info {
 	input: PathBuf,
 }

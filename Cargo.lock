@@ -805,6 +805,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fallible_collections"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52db5973b6a19247baf19b30f41c23a1bfffc2e9ce0a5db2f60e3cd5dc8895f7"
+dependencies = [
+ "hashbrown",
+]
+
+[[package]]
 name = "fastrand"
 version = "1.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1035,6 +1044,8 @@ dependencies = [
  "gdal",
  "geo",
  "rayon",
+ "resize",
+ "rgb",
  "thread_local",
  "tracy_full",
 ]
@@ -2167,6 +2178,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "resize"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d05ed0e778666d123be79444a5ddb81506fda18ea6d7c05a8b6a701a6215d310"
+dependencies = [
+ "fallible_collections",
+ "rgb",
+]
+
+[[package]]
 name = "rfd"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2188,6 +2209,15 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "windows",
+]
+
+[[package]]
+name = "rgb"
+version = "0.8.32"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e74fdc210d8f24a7dbfedc13b04ba5764f5232754ccebfdf5fff1bad791ccbc6"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]

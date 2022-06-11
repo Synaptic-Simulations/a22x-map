@@ -9,6 +9,7 @@ use crate::{
 };
 
 #[derive(Args)]
+/// Generate a dataset from a raw source.
 pub struct Generate {
 	input: PathBuf,
 	#[clap(short = 'w', long = "water")]
