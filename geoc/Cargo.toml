@@ -12,9 +12,11 @@ clap = { version = "3.1.18", features = ["derive"] }
 crossbeam = "0.8.1"
 ctrlc = "3.2.2"
 gdal = { git = "https://github.com/Synaptic-Simulations/gdal", optional = true }
+rand = { version = "0.8.5", features = ["small_rng"] }
 rayon = "1.5.3"
 resize = "0.7.3"
 rgb = "0.8.32"
+sysinfo = "0.24.3"
 tracy = { package = "tracy_full", version = "1.2.0", features = [] }
 thread_local = "1.1.4"
 

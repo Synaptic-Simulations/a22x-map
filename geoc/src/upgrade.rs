@@ -27,6 +27,7 @@ pub fn upgrade(upgrade: Upgrade) {
 	for_tile_in_output(
 		&upgrade.output,
 		upgrade.compression_level,
+		&[],
 		TileMetadata {
 			version: FORMAT_VERSION,
 			..source.metadata()
