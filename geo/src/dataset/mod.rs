@@ -1,10 +1,10 @@
 use std::{collections::HashSet, fs::File, io::Read, path::Path};
 
 use byteorder::{ByteOrder, LittleEndian};
-use memmap2::{Mmap, MmapOptions};
+use memmap2::Mmap;
 use zstd::{dict::DecoderDictionary, Decoder};
 
-use crate::{map_lat_lon_to_index, HillshadeMetadata, LoadError, TileMetadata, HILLSHADE_FORMAT_VERSION};
+use crate::{map_lat_lon_to_index, LoadError, TileMetadata};
 
 mod ver3;
 mod ver4;
@@ -58,41 +58,6 @@ impl Dataset {
 
 	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<i16>, std::io::Error>> {
 		self.get_tile_and_compressed_size(lat, lon).map(|x| x.map(|(x, _)| x))
-	}
-
-	pub fn get_raw_tile_data(&self, lat: i16, lon: i16) -> Option<Result<Vec<u8>, std::io::Error>> {
-		tracy::zone!("Get Raw Tile");
-
-		let index = map_lat_lon_to_index(lat, lon);
-		let offset = self.tile_map[index] as usize;
-		if offset == 0 {
-			return None;
-		}
-
-		let frame = &self.data[offset - self.data_offset..];
-
-		let res = self.metadata.resolution as usize;
-		let mut decompressed = Vec::with_capacity(res * res * 2);
-		decompressed.resize(decompressed.capacity(), 0);
-
-		tracy::zone!("Decompress");
-
-		let mut decoder = match Decoder::with_prepared_dictionary(frame, &self.dictionary) {
-			Ok(x) => x,
-			Err(e) => return Some(Err(e)),
-		}
-		.single_frame();
-		match decoder.include_magicbytes(false) {
-			Ok(x) => x,
-			Err(e) => return Some(Err(e)),
-		}
-		match decoder.read_exact(&mut decompressed) {
-			Ok(x) => x,
-			Err(e) => return Some(Err(e)),
-		}
-		decoder.finish();
-
-		Some(Ok(decompressed))
 	}
 
 	pub fn get_tile_and_compressed_size(
@@ -237,138 +202,5 @@ impl Dataset {
 		}
 
 		offset
-	}
-}
-
-pub struct Hillshade {
-	pub(crate) metadata: HillshadeMetadata,
-	pub(crate) tile_map: Vec<u64>,
-	pub(crate) dictionary: DecoderDictionary<'static>,
-	pub(crate) data: Mmap,
-	pub(crate) data_offset: usize,
-}
-
-impl Hillshade {
-	pub(crate) const DICT_OFFSET: usize = Self::TILE_MAP_OFFSET + 360 * 180 * 8;
-	pub(crate) const MAGIC: [u8; 5] = [98, 117, 115, 115, 121];
-	pub(crate) const TILE_MAP_OFFSET: usize = 11;
-
-	pub fn load(dir: &Path) -> Result<Self, LoadError> {
-		let meta = std::fs::metadata(&dir)?;
-		if meta.is_dir() {
-			Err(LoadError::UnsupportedFormatVersion)
-		} else {
-			let mut file = File::open(dir)?;
-			let mut buffer = Vec::with_capacity(Self::DICT_OFFSET + 8); // max dict offset + 8
-			buffer.resize(buffer.capacity(), 0);
-
-			file.read_exact(&mut buffer[0..7])
-				.map_err(|_| LoadError::InvalidFileSize)?;
-			if buffer[0..5] != Self::MAGIC {
-				return Err(LoadError::InvalidMagic);
-			}
-			let version = u16::from_le_bytes(buffer[5..7].try_into().unwrap());
-			if version != HILLSHADE_FORMAT_VERSION {
-				return Err(LoadError::UnsupportedFormatVersion);
-			}
-
-			file.read_exact(&mut buffer[7..Self::DICT_OFFSET + 8])
-				.map_err(|_| LoadError::InvalidFileSize)?;
-			let resolution = u16::from_le_bytes(buffer[7..9].try_into().unwrap());
-			let tiling = u16::from_le_bytes(buffer[9..11].try_into().unwrap());
-			let metadata = HillshadeMetadata {
-				version: HILLSHADE_FORMAT_VERSION,
-				resolution,
-				tiling,
-			};
-
-			let tile_map = buffer[Self::TILE_MAP_OFFSET..Self::DICT_OFFSET]
-				.chunks_exact(8)
-				.map(|x| u64::from_le_bytes(x.try_into().unwrap()))
-				.collect();
-			let dict_size = u64::from_le_bytes(buffer[Self::DICT_OFFSET..Self::DICT_OFFSET + 8].try_into().unwrap());
-			buffer.resize(dict_size as usize, 0);
-
-			file.read_exact(&mut buffer).map_err(|_| LoadError::InvalidFileSize)?;
-			let data_offset = Self::DICT_OFFSET + dict_size as usize + 8;
-
-			Ok(Self {
-				metadata,
-				tile_map,
-				dictionary: DecoderDictionary::copy(&buffer),
-				data: unsafe { MmapOptions::new().offset(data_offset as _).map(&file)? },
-				data_offset,
-			})
-		}
-	}
-
-	pub fn metadata(&self) -> HillshadeMetadata { self.metadata }
-
-	pub fn tile_exists(&self, lat: i16, lon: i16) -> bool {
-		let index = map_lat_lon_to_index(lat, lon);
-		self.tile_map[index] != 0
-	}
-
-	pub fn tile_count(&self) -> usize { self.tile_map.iter().filter(|&&x| x != 0).count() }
-
-	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<u8>, std::io::Error>> {
-		self.get_tile_and_compressed_size(lat, lon).map(|x| x.map(|(x, _)| x))
-	}
-
-	pub fn get_tile_and_compressed_size(&self, lat: i16, lon: i16) -> Option<Result<(Vec<u8>, usize), std::io::Error>> {
-		tracy::zone!("Get Tile");
-
-		let index = map_lat_lon_to_index(lat, lon);
-		let offset = self.tile_map[index] as usize;
-		if offset == 0 {
-			return None;
-		}
-
-		let frame = &self.data[offset - self.data_offset..];
-
-		let res = self.metadata.resolution as usize;
-		let mut decompressed = Vec::with_capacity(res * res * 2);
-		decompressed.resize(decompressed.capacity(), 0);
-
-		let remaining = {
-			tracy::zone!("Decompress");
-
-			let mut decoder = match Decoder::with_prepared_dictionary(frame, &self.dictionary) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			.single_frame();
-			match decoder.include_magicbytes(false) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			match decoder.read_exact(&mut decompressed) {
-				Ok(x) => x,
-				Err(e) => return Some(Err(e)),
-			}
-			decoder.finish()
-		};
-		let compressed_size = frame.len() - remaining.len();
-
-		let out = {
-			tracy::zone!("Untile");
-			let mut out = vec![0; (res * res) as usize];
-
-			let tiling = self.metadata.tiling as usize;
-			let tiles_per_row = res / tiling;
-			for (i, tile) in decompressed.chunks_exact(tiling * tiling).enumerate() {
-				let tile_offset_x = (i % tiles_per_row) * tiling;
-				let tile_offset_y = (i / tiles_per_row) * tiling;
-				for (j, &value) in tile.iter().enumerate() {
-					let x = tile_offset_x + j % tiling;
-					let y = tile_offset_y + j / tiling;
-					out[y * res + x] = value;
-				}
-			}
-
-			out
-		};
-
-		Some(Ok((out, compressed_size)))
 	}
 }

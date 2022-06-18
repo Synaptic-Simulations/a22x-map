@@ -50,92 +50,86 @@ pub fn edit(edit: Edit) {
 
 	let resizer = ThreadLocal::new();
 
-	for_tile_in_output(
-		&edit.output,
-		edit.compression_level,
-		&[],
-		metadata,
-		|lat, lon, builder| {
-			if let Some(source) = source.get_tile(lat, lon).transpose()? {
-				let data = if needs_resize {
-					let mut resizer = resizer
-						.get_or(|| {
-							RefCell::new(
-								Resizer::new(
-									source_metadata.resolution as _,
-									source_metadata.resolution as _,
-									metadata.resolution as _,
-									metadata.resolution as _,
-									Gray16,
-									Type::Lanczos3,
-								)
-								.unwrap(),
+	for_tile_in_output(&edit.output, edit.compression_level, metadata, |lat, lon, builder| {
+		if let Some(source) = source.get_tile(lat, lon).transpose()? {
+			let data = if needs_resize {
+				let mut resizer = resizer
+					.get_or(|| {
+						RefCell::new(
+							Resizer::new(
+								source_metadata.resolution as _,
+								source_metadata.resolution as _,
+								metadata.resolution as _,
+								metadata.resolution as _,
+								Gray16,
+								Type::Lanczos3,
 							)
-						})
-						.borrow_mut();
+							.unwrap(),
+						)
+					})
+					.borrow_mut();
 
+				let mut count = 0;
+				let water_mask: Vec<_> = source
+					.iter()
+					.copied()
+					.map(|x| {
+						if x == -500 {
+							count += 1;
+							1
+						} else {
+							0
+						}
+					})
+					.collect();
+
+				if count != source.len() {
 					let mut count = 0;
-					let water_mask: Vec<_> = source
+					let avg = source
 						.iter()
 						.copied()
-						.map(|x| {
-							if x == -500 {
+						.filter_map(|x| {
+							(x != -500).then(|| {
 								count += 1;
-								1
-							} else {
-								0
-							}
-						})
-						.collect();
-
-					if count != source.len() {
-						let mut count = 0;
-						let avg = source
-							.iter()
-							.copied()
-							.filter_map(|x| {
-								(x != -500).then(|| {
-									count += 1;
-									x as i64
-								})
+								x as i64
 							})
-							.sum::<i64>() / count + 500;
-						let source: Vec<_> = source
+						})
+						.sum::<i64>() / count + 500;
+					let source: Vec<_> = source
+						.into_iter()
+						.map(|x| if x == -500 { avg as i16 } else { x + 500 } as u16)
+						.collect();
+					let res = metadata.resolution as usize * metadata.resolution as usize;
+					let mut water = vec![0; res];
+					let mut output = vec![0; res];
+
+					{
+						tracy::zone!("Downsample");
+						resizer.resize(water_mask.as_gray(), water.as_gray_mut()).unwrap();
+						resizer.resize(source.as_gray(), output.as_gray_mut()).unwrap();
+					}
+
+					if !water.iter().copied().all(|x| x == 1) {
+						let output = output
 							.into_iter()
-							.map(|x| if x == -500 { avg as i16 } else { x + 500 } as u16)
+							.zip(water.into_iter())
+							.map(|(height, water)| if water == 1 { -500 } else { height as i16 - 500 })
 							.collect();
-						let res = metadata.resolution as usize * metadata.resolution as usize;
-						let mut water = vec![0; res];
-						let mut output = vec![0; res];
-
-						{
-							tracy::zone!("Downsample");
-							resizer.resize(water_mask.as_gray(), water.as_gray_mut()).unwrap();
-							resizer.resize(source.as_gray(), output.as_gray_mut()).unwrap();
-						}
-
-						if !water.iter().copied().all(|x| x == 1) {
-							let output = output
-								.into_iter()
-								.zip(water.into_iter())
-								.map(|(height, water)| if water == 1 { -500 } else { height as i16 - 500 })
-								.collect();
-							Some(output)
-						} else {
-							None
-						}
+						Some(output)
 					} else {
 						None
 					}
 				} else {
-					Some(source)
-				};
-				if let Some(data) = data {
-					builder.add_tile(lat, lon, data)?;
+					None
 				}
+			} else {
+				Some(source)
+			};
+			if let Some(data) = data {
+				builder.add_tile(lat, lon, data)?;
 			}
+		}
 
-			Ok(())
-		},
-	);
+		Ok(())
+	});
 }

@@ -14,7 +14,7 @@ pub struct Info {
 	input: PathBuf,
 }
 
-pub struct Size(pub usize);
+struct Size(usize);
 
 impl Display for Size {
 	fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {

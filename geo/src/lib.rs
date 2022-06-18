@@ -58,24 +58,6 @@ pub use builder::*;
 ///   next tile.
 pub const FORMAT_VERSION: u16 = 4;
 
-/// # Format version 1
-/// * [0..5]: Magic number: `[98, 117, 115, 115, 121]`.
-/// * [5..7]: The format version, little endian.
-/// * [7..9]: The resolution of the square tile (one side).
-/// * [9..11]: The size of each mini-tile.
-/// * [11..11 + 360 * 180 * 8 @ tile_end]: 360 * 180 `u64`s that store the offsets of the tile in question (from the
-///   beginning of the file). If zero, the tile is not present.
-/// * [tile_end..tile_end + 8] @ decomp_dict_size: The size of the decompression dictionary.
-/// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
-/// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
-///   next tile.
-///
-/// This is exactly the same as heightmap format version 4, but with a different magic number, and the payload stored is
-/// `u8`s, not `u16`s.
-pub const HILLSHADE_FORMAT_VERSION: u16 = 1;
-
-pub use zstd;
-
 pub enum LoadError {
 	InvalidFileSize,
 	InvalidMagic,
@@ -113,17 +95,6 @@ pub struct TileMetadata {
 	pub resolution: u16,
 	/// The multiplier for the raw stored values.
 	pub height_resolution: u16,
-	/// The resolution of the mini-tiles inside each tile.
-	pub tiling: u16,
-}
-
-#[derive(Copy, Clone, Eq, PartialEq)]
-#[repr(C)]
-pub struct HillshadeMetadata {
-	/// The file format version.
-	pub version: u16,
-	/// The length of the side of the square tile.
-	pub resolution: u16,
 	/// The resolution of the mini-tiles inside each tile.
 	pub tiling: u16,
 }

@@ -48,7 +48,6 @@ pub fn generate(generate: Generate) {
 	for_tile_in_output(
 		&generate.output,
 		generate.compression_level,
-		&[],
 		metadata,
 		|lat, lon, builder| {
 			let bottom_left = LatLon {
