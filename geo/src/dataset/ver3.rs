@@ -1,7 +1,6 @@
 use std::{fs::File, io::Read};
 
 use memmap2::MmapOptions;
-use zstd::dict::DecoderDictionary;
 
 use crate::{Dataset, LoadError, TileMetadata};
 
@@ -14,7 +13,7 @@ pub fn load(buffer: &mut Vec<u8>, file: &mut File) -> Result<Dataset, LoadError>
 		version: 3,
 		resolution,
 		height_resolution,
-		tiling: 1,
+		delta_compressed: false,
 	};
 
 	let tile_map = buffer[Dataset::VER3_TILE_MAP_OFFSET..Dataset::VER3_DICT_OFFSET]
@@ -34,7 +33,6 @@ pub fn load(buffer: &mut Vec<u8>, file: &mut File) -> Result<Dataset, LoadError>
 	Ok(Dataset {
 		metadata,
 		tile_map,
-		dictionary: DecoderDictionary::copy(&buffer),
 		data: unsafe { MmapOptions::new().offset(data_offset as _).map(&*file)? },
 		data_offset,
 	})

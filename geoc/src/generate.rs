@@ -20,8 +20,8 @@ pub struct Generate {
 	resolution: u16,
 	#[clap(short = 's', long = "hres", default_value_t = 50)]
 	height_resolution: u16,
-	#[clap(short = 'c', long = "compression", default_value_t = 21)]
-	compression_level: i8,
+	#[clap(short = 'd', long = "delta")]
+	delta_compressed: bool,
 }
 
 pub fn generate(generate: Generate) {
@@ -43,43 +43,39 @@ pub fn generate(generate: Generate) {
 		version: FORMAT_VERSION,
 		resolution: generate.resolution,
 		height_resolution: generate.height_resolution,
+		delta_compressed: generate.delta_compressed,
 	};
 
-	for_tile_in_output(
-		&generate.output,
-		generate.compression_level,
-		metadata,
-		|lat, lon, builder| {
-			let bottom_left = LatLon {
-				lat: lat as f64,
-				lon: lon as f64,
-			};
-			let top_right = LatLon {
-				lat: (lat + 1) as f64,
-				lon: (lon + 1) as f64,
-			};
+	for_tile_in_output(&generate.output, metadata, |lat, lon, builder| {
+		let bottom_left = LatLon {
+			lat: lat as f64,
+			lon: lon as f64,
+		};
+		let top_right = LatLon {
+			lat: (lat + 1) as f64,
+			lon: (lon + 1) as f64,
+		};
 
-			source
-				.get_data(bottom_left, top_right, metadata.resolution as _)
-				.and_then(|data| {
-					tracy::zone!("Load water");
-					water
-						.get_data(bottom_left, top_right, metadata.resolution as _)
-						.map(|water: Vec<u8>| (data, water))
-				})
-				.map(|(mut data, water)| {
-					tracy::zone!("Merge water mask");
+		source
+			.get_data(bottom_left, top_right, metadata.resolution as _)
+			.and_then(|data| {
+				tracy::zone!("Load water");
+				water
+					.get_data(bottom_left, top_right, metadata.resolution as _)
+					.map(|water: Vec<u8>| (data, water))
+			})
+			.map(|(mut data, water)| {
+				tracy::zone!("Merge water mask");
 
-					for (height, &mask) in data.iter_mut().zip(water.iter()) {
-						if mask != 0 {
-							*height = -500;
-						}
+				for (height, &mask) in data.iter_mut().zip(water.iter()) {
+					if mask != 0 {
+						*height = -500;
 					}
-					builder.add_tile(lat, lon, data)
-				})
-				.transpose()?;
+				}
+				builder.add_tile(lat, lon, data)
+			})
+			.transpose()?;
 
-			Ok(())
-		},
-	);
+		Ok(())
+	});
 }

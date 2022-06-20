@@ -1,5 +1,7 @@
 //! A library for working with the `a22x` map's terrain format.
 
+extern crate core;
+
 use std::{
 	error::Error,
 	fmt::{Debug, Display},
@@ -56,7 +58,24 @@ pub use builder::*;
 /// * [tile_end + 8..tile_end + 8 + decomp_dict_size]: The decompression dictionary.
 /// * [tile_end + 8 + decomp_dict_size + offset...]: A zstd frame containing the compressed data of the tile, until the
 ///   next tile.
-pub const FORMAT_VERSION: u16 = 4;
+///
+/// # Format version 5
+/// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
+/// * [5..7]: The format version, little endian.
+/// * [7..9]: The resolution of the square tile (one side).
+/// * [9..11]: The resolution of height values (multiply with the raw value).
+/// * [11..12]: If the data in each tile is delta-compressed.
+/// * [12..12 + 360 * 180 * 8] @ offsets: 360 * 180 `u64`s that store the offsets of the tile in question (from the
+///   beginning of the file). If zero, the tile is not present.
+/// * [offset..]: A webp image containing the compressed data of the tile, until the next tile.
+///
+/// Image specifics:
+/// * If the data is delta-compressed, the first pixel is the minimum (mapped) height, and each following pixel is the
+///   delta from the previous.
+/// * Otherwise, every pixel is the mapped height.
+/// * Since webp only supports rgb8 or rgba8, we store the data as a webp image of resolution `res / 2` * `tile_size`,
+///   with each `u16` pixel splatted over two components of an rgba8 pixel.
+pub const FORMAT_VERSION: u16 = 5;
 
 pub enum LoadError {
 	InvalidFileSize,
@@ -96,7 +115,7 @@ pub struct TileMetadata {
 	/// The multiplier for the raw stored values.
 	pub height_resolution: u16,
 	/// The resolution of the mini-tiles inside each tile.
-	pub tiling: u16,
+	pub delta_compressed: bool,
 }
 
 pub fn map_lat_lon_to_index(lat: i16, lon: i16) -> usize {

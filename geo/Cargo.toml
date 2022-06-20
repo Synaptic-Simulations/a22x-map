@@ -6,7 +6,7 @@ edition = "2021"
 
 [dependencies]
 bitpacking = "0.8"
-byteorder = "1.4.3"
+libwebp-sys = { version = "0.6.0", features = ["avx2", "neon", "sse41"] }
 memmap2 = "0.5.3"
 tracy = { package = "tracy_full", version = "1.2.0" }
 zstd = { version = "*", features = ["experimental"] }

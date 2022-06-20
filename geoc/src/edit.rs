@@ -18,10 +18,8 @@ pub struct Edit {
 	resolution: u16,
 	#[clap(short = 's', long = "hres", default_value_t = 50)]
 	height_resolution: u16,
-	#[clap(short = 'c', long = "compression", default_value_t = 21)]
-	compression_level: i8,
-	#[clap(short = 't', long = "tiling", default_value_t = 1)]
-	tiling: u16,
+	#[clap(short = 'd', long = "delta")]
+	delta_compressed: bool,
 }
 
 pub fn edit(edit: Edit) {
@@ -33,24 +31,19 @@ pub fn edit(edit: Edit) {
 		},
 	};
 
-	if edit.resolution % edit.tiling != 0 {
-		eprintln!("Resolution must be a multiple of tiling");
-		return;
-	}
-
 	let source_metadata = source.metadata();
 	let metadata = TileMetadata {
 		version: FORMAT_VERSION,
 		resolution: edit.resolution,
 		height_resolution: edit.height_resolution,
-		tiling: edit.tiling,
+		delta_compressed: edit.delta_compressed,
 	};
 
 	let needs_resize = metadata.resolution != source_metadata.resolution;
 
 	let resizer = ThreadLocal::new();
 
-	for_tile_in_output(&edit.output, edit.compression_level, metadata, |lat, lon, builder| {
+	for_tile_in_output(&edit.output, metadata, |lat, lon, builder| {
 		if let Some(source) = source.get_tile(lat, lon).transpose()? {
 			let data = if needs_resize {
 				let mut resizer = resizer
@@ -123,7 +116,11 @@ pub fn edit(edit: Edit) {
 					None
 				}
 			} else {
-				Some(source)
+				if !source.iter().copied().all(|x| x == -500) {
+					Some(source)
+				} else {
+					None
+				}
 			};
 			if let Some(data) = data {
 				builder.add_tile(lat, lon, data)?;

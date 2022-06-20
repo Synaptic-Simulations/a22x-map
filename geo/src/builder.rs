@@ -5,7 +5,14 @@ use std::{
 	sync::RwLock,
 };
 
-use zstd::Encoder;
+use libwebp_sys::{
+	WebPEncode,
+	WebPImageHint::WEBP_HINT_GRAPH,
+	WebPInitConfig,
+	WebPPicture,
+	WebPPictureImportRGBA,
+	WebPPictureInit,
+};
 
 use crate::{map_lat_lon_to_index, Dataset, TileMetadata, FORMAT_VERSION};
 
@@ -15,19 +22,17 @@ struct Locked {
 }
 
 pub struct DatasetBuilder {
-	compression_level: i8,
 	metadata: TileMetadata,
 	locked: RwLock<Locked>,
 }
 
 impl DatasetBuilder {
-	pub fn from_dataset(path: &Path, dataset: Dataset, compression_level: i8) -> Result<Self, std::io::Error> {
+	pub fn from_dataset(path: &Path, dataset: Dataset) -> Result<Self, std::io::Error> {
 		let metadata = dataset.metadata;
 		let tile_map = dataset.tile_map;
 		drop(dataset.data);
 
 		Ok(Self {
-			compression_level,
 			metadata,
 			locked: RwLock::new(Locked {
 				tile_map,
@@ -36,16 +41,11 @@ impl DatasetBuilder {
 		})
 	}
 
-	pub fn new(path: &Path, metadata: TileMetadata, compression_level: i8) -> Result<Self, std::io::Error> {
+	pub fn new(path: &Path, metadata: TileMetadata) -> Result<Self, std::io::Error> {
 		assert_eq!(
 			metadata.version, FORMAT_VERSION,
 			"Can only build datasets with version {}",
 			FORMAT_VERSION
-		);
-		assert_eq!(
-			metadata.resolution % metadata.tiling,
-			0,
-			"Resolution must be a multiple of tiling"
 		);
 
 		let tile_map = vec![0; 360 * 180];
@@ -54,7 +54,6 @@ impl DatasetBuilder {
 		Self::write_to_file(&mut file, metadata, &tile_map, &[])?;
 
 		Ok(Self {
-			compression_level,
 			metadata,
 			locked: RwLock::new(Locked { tile_map, file }),
 		})
@@ -66,43 +65,66 @@ impl DatasetBuilder {
 	}
 
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
-		let data: Vec<_> = {
-			tracy::zone!("Tile");
+		let mapped: Vec<_> = data
+			.into_iter()
+			.map(|height| {
+				let h = height + 500;
+				let h = h as f32 / self.metadata.height_resolution as f32;
+				h.round() as i16
+			})
+			.collect();
 
-			let tiling = self.metadata.tiling as usize;
-			let tile_size = tiling * tiling;
-			let tiles_per_row = self.metadata.resolution as usize / tiling;
-			let mut out = vec![0; data.len() * 2];
+		let data: Vec<u8> = if self.metadata.delta_compressed {
+			std::iter::once(mapped[0].to_le_bytes())
+				.flatten()
+				.chain(mapped.windows(2).flat_map(|x| {
+					let l = x[0];
+					let r = x[1];
 
-			for (i, tile) in out.chunks_exact_mut(tile_size * 2).enumerate() {
-				let tile_offset_x = (i % tiles_per_row) * tiling;
-				let tile_offset_y = (i / tiles_per_row) * tiling;
-				for (j, value) in tile.chunks_exact_mut(2).enumerate() {
-					let x = tile_offset_x + j % tiling;
-					let y = tile_offset_y + j / tiling;
-					let height = data[y * self.metadata.resolution as usize + x];
-
-					let positive_height = height + 500;
-					let height = positive_height as f32 / self.metadata.height_resolution as f32;
-					value.copy_from_slice(&(height.round() as u16).to_le_bytes());
-				}
-			}
-
-			out
+					(r - l).to_le_bytes()
+				}))
+				.collect()
+		} else {
+			mapped.into_iter().flat_map(i16::to_le_bytes).collect()
 		};
 
 		let mut temp = Vec::new();
-		{
+		unsafe {
 			tracy::zone!("Compress");
 
-			let mut encoder = Encoder::new(&mut temp, self.compression_level as _).expect("Compression error");
-			encoder.set_pledged_src_size(Some(data.len() as u64)).unwrap();
-			encoder.include_magicbytes(false).unwrap();
-			encoder.include_checksum(false).unwrap();
-			encoder.long_distance_matching(true).unwrap();
+			let mut config = std::mem::zeroed();
+			WebPInitConfig(&mut config);
+			config.lossless = 1;
+			config.quality = 100.0;
+			config.method = 3;
+			config.image_hint = WEBP_HINT_GRAPH;
+			config.exact = 1;
 
-			encoder.write_all(&data).unwrap();
-			encoder.finish().unwrap();
+			let mut picture = std::mem::zeroed();
+			WebPPictureInit(&mut picture);
+			picture.use_argb = 1;
+			picture.writer = Some(write);
+			picture.custom_ptr = &mut temp as *mut _ as _;
+			picture.width = self.metadata.resolution as i32 / 2;
+			picture.height = self.metadata.resolution as _;
+
+			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, self.metadata.resolution as i32 * 2);
+
+			WebPEncode(&config, &mut picture);
+
+			if picture.error_code as i32 != 0 {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					format!("WebPEncode failed: {}", picture.error_code as i32),
+				));
+			}
+
+			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
+				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
+				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
+
+				1
+			}
 		}
 
 		tracy::zone!("Write");
@@ -122,6 +144,7 @@ impl DatasetBuilder {
 		locked.file.seek(SeekFrom::Start(match self.metadata.version {
 			3 => Dataset::VER3_TILE_MAP_OFFSET,
 			4 => Dataset::VER4_TILE_MAP_OFFSET,
+			5 => Dataset::VER5_TILE_MAP_OFFSET,
 			_ => unreachable!(),
 		} as _))?;
 		let slice = unsafe { std::slice::from_raw_parts(locked.tile_map.as_ptr() as _, locked.tile_map.len() * 8) };
@@ -137,12 +160,12 @@ impl DatasetBuilder {
 	fn write_to_file(
 		file: &mut File, metadata: TileMetadata, tile_map: &[u64], data: &[u8],
 	) -> Result<(), std::io::Error> {
-		let mut header = [0; Dataset::VER4_TILE_MAP_OFFSET];
+		let mut header = [0; Dataset::VER5_TILE_MAP_OFFSET];
 		header[0..5].copy_from_slice(&Dataset::MAGIC);
 		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
 		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());
 		header[9..11].copy_from_slice(&metadata.height_resolution.to_le_bytes());
-		header[11..13].copy_from_slice(&metadata.tiling.to_le_bytes());
+		header[11] = metadata.delta_compressed as u8;
 
 		file.write_all(&header)?;
 		file.write_all(&0u64.to_le_bytes())?;

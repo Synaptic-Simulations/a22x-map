@@ -45,7 +45,7 @@ pub fn info(info: Info) {
 	println!("  Version: {}", metadata.version);
 	println!("  Resolution: {}", metadata.resolution);
 	println!("  Height resolution: {}", metadata.height_resolution);
-	println!("  Tiling: {}", metadata.tiling);
+	println!("  Delta compressed: {}", metadata.delta_compressed);
 
 	println!();
 
@@ -79,10 +79,4 @@ pub fn info(info: Info) {
 		"  Water tiles size: {}",
 		Size(water_tiles_size.load(Ordering::Relaxed) as _)
 	);
-
-	let orphaned_tiles = dataset.get_orphaned_tiles(|x, of| print!("\r{} / {}", Size(x), Size(of)));
-	print!("\r");
-	println!("  Orphaned tiles: {}", orphaned_tiles.len());
-	let size: u64 = orphaned_tiles.iter().map(|&(_, size)| size).sum();
-	println!("  Orphaned tiles size: {}", Size(size as _));
 }
