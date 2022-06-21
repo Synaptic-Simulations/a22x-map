@@ -1,4 +1,5 @@
 use std::{
+	collections::HashSet,
 	fs::{File, OpenOptions},
 	io::{Seek, SeekFrom, Write},
 	path::Path,
@@ -13,6 +14,7 @@ use libwebp_sys::{
 	WebPPictureImportRGBA,
 	WebPPictureInit,
 };
+use zstd::Encoder;
 
 use crate::{map_lat_lon_to_index, Dataset, TileMetadata, FORMAT_VERSION};
 
@@ -73,58 +75,23 @@ impl DatasetBuilder {
 				h.round() as i16
 			})
 			.collect();
-
-		let data: Vec<u8> = if self.metadata.delta_compressed {
-			std::iter::once(mapped[0].to_le_bytes())
-				.flatten()
-				.chain(mapped.windows(2).flat_map(|x| {
-					let l = x[0];
-					let r = x[1];
-
-					(r - l).to_le_bytes()
-				}))
-				.collect()
-		} else {
-			mapped.into_iter().flat_map(i16::to_le_bytes).collect()
-		};
+		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
+		let paletted = Self::try_palette(predicted);
 
 		let mut temp = Vec::new();
-		unsafe {
+		{
 			tracy::zone!("Compress");
 
-			let mut config = std::mem::zeroed();
-			WebPInitConfig(&mut config);
-			config.lossless = 1;
-			config.quality = 100.0;
-			config.method = 3;
-			config.image_hint = WEBP_HINT_GRAPH;
-			config.exact = 1;
+			let mut encoder = Encoder::new(&mut temp, 21)?;
+			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
+			encoder.include_magicbytes(false)?;
+			encoder.include_checksum(false)?;
+			encoder.long_distance_matching(true)?;
+			encoder.include_dictid(false)?;
+			encoder.include_contentsize(false)?;
 
-			let mut picture = std::mem::zeroed();
-			WebPPictureInit(&mut picture);
-			picture.use_argb = 1;
-			picture.writer = Some(write);
-			picture.custom_ptr = &mut temp as *mut _ as _;
-			picture.width = self.metadata.resolution as i32 / 2;
-			picture.height = self.metadata.resolution as _;
-
-			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, self.metadata.resolution as i32 * 2);
-
-			WebPEncode(&config, &mut picture);
-
-			if picture.error_code as i32 != 0 {
-				return Err(std::io::Error::new(
-					std::io::ErrorKind::Other,
-					format!("WebPEncode failed: {}", picture.error_code as i32),
-				));
-			}
-
-			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
-				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
-				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
-
-				1
-			}
+			encoder.write_all(&paletted)?;
+			encoder.finish()?;
 		}
 
 		tracy::zone!("Write");
@@ -156,6 +123,52 @@ impl DatasetBuilder {
 	}
 
 	pub fn finish(self) -> Result<(), std::io::Error> { self.flush() }
+
+	fn transform_map(height_res: u16, mut data: Vec<i16>) -> Vec<i16> {
+		for height in &mut data {
+			let h = *height + 500;
+			let h = h as f32 / height_res as f32;
+			*height = h.round() as i16
+		}
+
+		data
+	}
+
+	fn transform_prediction(res: usize, mut data: Vec<i16>) -> Vec<i16> {
+		fn predict(previous: i16, current: i16) -> i16 {
+			let delta = current - previous;
+			current + delta
+		}
+
+		// Starting from top left, store delta to the bottom.
+		data[res] -= data[0];
+		// Then predict first column.
+		for row in 2..res {
+			data[row * res] -= predict(data[(row - 1) * res], data[(row - 2) * res]);
+		}
+		// Then predict each row.
+		for row in data.chunks_exact_mut(res) {
+			// Store first as delta from the left.
+			row[1] -= row[0];
+			for offset in 0..res - 2 {
+				row[offset + 2] -= predict(row[offset], row[offset + 1]);
+			}
+		}
+
+		data
+	}
+
+	fn try_palette(data: Vec<i16>) -> Vec<u8> {
+		let mut uniques = HashSet::with_capacity(256);
+		for value in data.iter() {
+			uniques.insert(*value);
+		}
+
+		if uniques.len() > 256 {
+			data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+		} else {
+		}
+	}
 
 	fn write_to_file(
 		file: &mut File, metadata: TileMetadata, tile_map: &[u64], data: &[u8],
