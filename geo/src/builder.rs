@@ -1,5 +1,5 @@
 use std::{
-	collections::HashSet,
+	collections::{HashMap, HashSet},
 	fs::{File, OpenOptions},
 	io::{Seek, SeekFrom, Write},
 	path::Path,
@@ -67,22 +67,15 @@ impl DatasetBuilder {
 	}
 
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
-		let mapped: Vec<_> = data
-			.into_iter()
-			.map(|height| {
-				let h = height + 500;
-				let h = h as f32 / self.metadata.height_resolution as f32;
-				h.round() as i16
-			})
-			.collect();
-		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
+		let mapped = Self::transform_map(self.metadata.height_resolution, data);
+		let predicted: Vec<_> = Self::transform_prediction(self.metadata.resolution as _, mapped);
 		let paletted = Self::try_palette(predicted);
 
 		let mut temp = Vec::new();
 		{
 			tracy::zone!("Compress");
 
-			let mut encoder = Encoder::new(&mut temp, 21)?;
+			let mut encoder = Encoder::new(&mut temp, 0)?;
 			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
 			encoder.include_magicbytes(false)?;
 			encoder.include_checksum(false)?;
@@ -144,11 +137,11 @@ impl DatasetBuilder {
 		data[res] -= data[0];
 		// Then predict first column.
 		for row in 2..res {
-			data[row * res] -= predict(data[(row - 1) * res], data[(row - 2) * res]);
+			data[row * res] -= predict(data[(row - 2) * res], data[(row - 1) * res]);
 		}
 		// Then predict each row.
 		for row in data.chunks_exact_mut(res) {
-			// Store first as delta from the left.
+			// Store second as delta from the left.
 			row[1] -= row[0];
 			for offset in 0..res - 2 {
 				row[offset + 2] -= predict(row[offset], row[offset + 1]);
@@ -167,6 +160,22 @@ impl DatasetBuilder {
 		if uniques.len() > 256 {
 			data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
 		} else {
+			let mut map = HashMap::with_capacity(uniques.len());
+			let mut sorted: Vec<_> = uniques.into_iter().collect();
+			sorted.sort_unstable();
+
+			for (i, &x) in sorted.iter().enumerate() {
+				map.insert(x, i as u8);
+			}
+
+			for offset in 0..sorted.len() {
+				sorted[offset + 1] -= sorted[offset];
+			}
+
+			std::iter::once(sorted.len() as u8)
+				.chain(sorted.into_iter().flat_map(|x| x.to_le_bytes()))
+				.chain(data.into_iter().map(|h| map[&h]))
+				.collect()
 		}
 	}
 
