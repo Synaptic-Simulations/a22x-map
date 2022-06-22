@@ -68,32 +68,16 @@ impl DatasetBuilder {
 
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
 		let mapped = Self::transform_map(self.metadata.height_resolution, data);
-		let predicted: Vec<_> = Self::transform_prediction(self.metadata.resolution as _, mapped);
-		let paletted = Self::try_palette(predicted);
+		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
 
-		let mut temp = Vec::new();
-		{
-			tracy::zone!("Compress");
-
-			let mut encoder = Encoder::new(&mut temp, 0)?;
-			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
-			encoder.include_magicbytes(false)?;
-			encoder.include_checksum(false)?;
-			encoder.long_distance_matching(true)?;
-			encoder.include_dictid(false)?;
-			encoder.include_contentsize(false)?;
-
-			encoder.write_all(&paletted)?;
-			encoder.finish()?;
-		}
+		let compressed = Self::compress_webp(predicted, self.metadata.resolution)?;
 
 		tracy::zone!("Write");
-
 		let index = map_lat_lon_to_index(lat, lon);
 		let mut locked = self.locked.write().unwrap();
 		let offset = locked.file.seek(SeekFrom::End(0))?;
 		locked.tile_map[index] = offset;
-		locked.file.write_all(&temp)
+		locked.file.write_all(&compressed)
 	}
 
 	pub fn flush(&self) -> Result<(), std::io::Error> {
@@ -118,6 +102,8 @@ impl DatasetBuilder {
 	pub fn finish(self) -> Result<(), std::io::Error> { self.flush() }
 
 	fn transform_map(height_res: u16, mut data: Vec<i16>) -> Vec<i16> {
+		tracy::zone!("Map height");
+
 		for height in &mut data {
 			let h = *height + 500;
 			let h = h as f32 / height_res as f32;
@@ -128,30 +114,70 @@ impl DatasetBuilder {
 	}
 
 	fn transform_prediction(res: usize, mut data: Vec<i16>) -> Vec<i16> {
-		fn predict(previous: i16, current: i16) -> i16 {
-			let delta = current - previous;
-			current + delta
-		}
+		tracy::zone!("Map prediction");
 
-		// Starting from top left, store delta to the bottom.
-		data[res] -= data[0];
-		// Then predict first column.
-		for row in 2..res {
-			data[row * res] -= predict(data[(row - 2) * res], data[(row - 1) * res]);
-		}
-		// Then predict each row.
-		for row in data.chunks_exact_mut(res) {
-			// Store second as delta from the left.
-			row[1] -= row[0];
-			for offset in 0..res - 2 {
-				row[offset + 2] -= predict(row[offset], row[offset + 1]);
+		fn delta(previous: i16, actual: i16) -> i16 {
+			if actual == -500 {
+				7000
+			} else {
+				actual - previous
 			}
 		}
+
+		fn predict_linear(previous: i16, current: i16, actual: i16) -> i16 {
+			if actual == -500 {
+				7000
+			} else {
+				let delta = current - previous;
+				let pred = current + delta;
+				actual - pred
+			}
+		}
+
+		fn predict_plane(left: i16, above: i16, top_left: i16, actual: i16) -> i16 {
+			if actual == -500 {
+				7000
+			} else {
+				let dhdy = left - top_left;
+				let pred = above + dhdy;
+				actual - pred
+			}
+		}
+
+		// Predict everything except the first row and column, bottom to top, right to left.
+		for x in (1..res).rev() {
+			for y in (1..res).rev() {
+				let left = data[y * res + x - 1];
+				let above = data[(y - 1) * res + x];
+				let top_left = data[(y - 1) * res + x - 1];
+				let actual = data[y * res + x];
+				data[y * res + x] = predict_plane(left, above, top_left, actual);
+			}
+		}
+		// Predict the first row and column, except for (1, 0) and (0, 1).
+		for x in (2..res).rev() {
+			let previous = data[x - 2];
+			let current = data[x - 1];
+			let actual = data[x];
+			data[x] = predict_linear(previous, current, actual);
+		}
+		for y in (2..res).rev() {
+			let previous = data[(y - 2) * res];
+			let current = data[(y - 1) * res];
+			let actual = data[y * res];
+			data[y * res] = predict_linear(previous, current, actual);
+		}
+
+		// Predict (0, 1) and (1, 0).
+		data[1] = delta(data[0], data[1]);
+		data[res] = delta(data[0], data[res]);
 
 		data
 	}
 
 	fn try_palette(data: Vec<i16>) -> Vec<u8> {
+		tracy::zone!("Palette");
+
 		let mut uniques = HashSet::with_capacity(256);
 		for value in data.iter() {
 			uniques.insert(*value);
@@ -168,7 +194,7 @@ impl DatasetBuilder {
 				map.insert(x, i as u8);
 			}
 
-			for offset in 0..sorted.len() {
+			for offset in (0..sorted.len() - 1).rev() {
 				sorted[offset + 1] -= sorted[offset];
 			}
 
@@ -176,6 +202,73 @@ impl DatasetBuilder {
 				.chain(sorted.into_iter().flat_map(|x| x.to_le_bytes()))
 				.chain(data.into_iter().map(|h| map[&h]))
 				.collect()
+		}
+	}
+
+	fn compress_zstd(data: Vec<i16>) -> Result<Vec<u8>, std::io::Error> {
+		let paletted = Self::try_palette(data);
+
+		let mut temp = Vec::new();
+		{
+			tracy::zone!("Compress");
+
+			let mut encoder = Encoder::new(&mut temp, 21)?;
+			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
+			encoder.include_magicbytes(false)?;
+			encoder.include_checksum(false)?;
+			encoder.long_distance_matching(true)?;
+			encoder.include_dictid(false)?;
+			encoder.include_contentsize(false)?;
+			encoder.window_log((paletted.len() as f32).log2() as u32 + 1)?;
+
+			encoder.write_all(&paletted)?;
+			encoder.finish()?;
+		}
+
+		Ok(temp)
+	}
+
+	fn compress_webp(data: Vec<i16>, res: u16) -> Result<Vec<u8>, std::io::Error> {
+		unsafe {
+			tracy::zone!("Compress");
+
+			let mut temp = Vec::new();
+
+			let mut config = std::mem::zeroed();
+			WebPInitConfig(&mut config);
+			config.lossless = 1;
+			config.quality = 100.0;
+			config.method = 3;
+			config.image_hint = WEBP_HINT_GRAPH;
+			config.exact = 1;
+
+			let mut picture = std::mem::zeroed();
+			WebPPictureInit(&mut picture);
+			picture.use_argb = 1;
+			picture.writer = Some(write);
+			picture.custom_ptr = &mut temp as *mut _ as _;
+			picture.width = res as i32 / 2;
+			picture.height = res as _;
+
+			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, res as i32 * 2);
+
+			WebPEncode(&config, &mut picture);
+
+			if picture.error_code as i32 != 0 {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					format!("WebPEncode failed: {}", picture.error_code as i32),
+				));
+			}
+
+			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
+				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
+				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
+
+				1
+			}
+
+			Ok(temp)
 		}
 	}
 
