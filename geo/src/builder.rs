@@ -8,7 +8,7 @@ use std::{
 
 use libwebp_sys::{
 	WebPEncode,
-	WebPImageHint::WEBP_HINT_GRAPH,
+	WebPImageHint,
 	WebPInitConfig,
 	WebPPicture,
 	WebPPictureImportRGBA,
@@ -265,7 +265,7 @@ impl DatasetBuilder {
 			config.lossless = 1;
 			config.quality = 100.0;
 			config.method = 3;
-			config.image_hint = WEBP_HINT_GRAPH;
+			config.image_hint = WebPImageHint::WEBP_HINT_DEFAULT;
 			config.exact = 1;
 
 			let mut picture = std::mem::zeroed();
