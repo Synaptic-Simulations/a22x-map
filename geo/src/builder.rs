@@ -2,7 +2,6 @@ use std::{
 	collections::{HashMap, HashSet},
 	fs::{File, OpenOptions},
 	io::{Seek, SeekFrom, Write},
-	mem::ManuallyDrop,
 	path::Path,
 	sync::RwLock,
 };
@@ -62,8 +61,8 @@ impl DatasetBuilder {
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
 		let mapped = Self::transform_map(self.metadata.height_resolution, data);
 		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
-
-		let compressed = Self::compress_zstd(predicted)?;
+		let paletted = Self::try_palette(predicted);
+		let compressed = Self::compress(paletted)?;
 
 		tracy::zone!("Write");
 		let index = map_lat_lon_to_index(lat, lon);
@@ -95,23 +94,15 @@ impl DatasetBuilder {
 	pub fn finish(self) -> Result<(), std::io::Error> { self.flush() }
 
 	fn transform_map(height_res: u16, data: Vec<i16>) -> Vec<u16> {
-		tracy::zone!("Map height");
+		tracy::zone!("Heightmap");
 
-		unsafe {
-			let mut data = ManuallyDrop::new(data);
-			let ptr = data.as_mut_ptr() as *mut u16;
-			let len = data.len();
-			let cap = data.capacity();
-			let mut data = Vec::from_raw_parts(ptr, len, cap);
-
-			for height in data.iter_mut() {
-				let h = *height + 500;
+		data.into_iter()
+			.map(|height| {
+				let h = height + 500;
 				let h = h as f32 / height_res as f32;
-				*height = h.round() as u16;
-			}
-
-			data
-		}
+				h.round() as u16
+			})
+			.collect()
 	}
 
 	fn transform_prediction(res: usize, mut data: Vec<u16>) -> Vec<u16> {
@@ -239,23 +230,21 @@ impl DatasetBuilder {
 		}
 	}
 
-	fn compress_zstd(data: Vec<u16>) -> Result<Vec<u8>, std::io::Error> {
-		let paletted = Self::try_palette(data);
-
+	fn compress(data: Vec<u8>) -> Result<Vec<u8>, std::io::Error> {
 		let mut temp = Vec::new();
 		{
 			tracy::zone!("Compress");
 
 			let mut encoder = Encoder::new(&mut temp, 22)?;
-			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
+			encoder.set_pledged_src_size(Some(data.len() as u64))?;
 			encoder.include_magicbytes(false)?;
 			encoder.include_checksum(false)?;
 			encoder.long_distance_matching(true)?;
 			encoder.include_dictid(false)?;
 			encoder.include_contentsize(false)?;
-			encoder.window_log((paletted.len() as f32).log2() as u32 + 1)?;
+			encoder.window_log((data.len() as f32).log2() as u32 + 1)?;
 
-			encoder.write_all(&paletted)?;
+			encoder.write_all(&data)?;
 			encoder.finish()?;
 		}
 

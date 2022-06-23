@@ -75,6 +75,46 @@ pub use builder::*;
 /// * Otherwise, every pixel is the mapped height.
 /// * Since webp only supports rgb8 or rgba8, we store the data as a webp image of resolution `res / 2` * `tile_size`,
 ///   with each `u16` pixel splatted over two components of an rgba8 pixel.
+///
+/// # Format version 6
+/// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
+/// * [5..7]: The format version, little endian.
+/// * [7..9]: The resolution of the square tile (one side).
+/// * [9..11]: The resolution of height values (round each raw value to the nearest multiple).
+/// * [11]: Empty space.
+/// * [12..12 + 360 * 180 * 8] @ offsets: 360 * 180 `u64`s that store the offsets of the tile in question (from the
+///   beginning of the file). If zero, the tile is not present.
+/// * [offset..]: A zstd frame containing the compressed data of the tile, until the next tile.
+///
+/// ## Input to zstd
+/// Each tile is laid out in row-major order. The origin (lowest latitude and longitude) is the bottom-left.
+/// A special height value of `-500` indicates that the pixel is covered by water.
+///
+/// Before submitting the data to zstd, a series of transformations are applied, each using the input of the former.
+///
+/// ### Heightmapping
+/// The height values are downsampled and converted to an unsigned 16 bit integer.
+/// 1. 500 is added to each height value, making 0 signify a water pixel (since lowest point on Earth is -431m).
+/// 2. The values are divided by the height resolution, and rounded to the nearest integer.
+///
+/// ### Spatial prediction
+/// The top-left pixel of each tile contains the raw value from the previous transform.
+/// The pixel directly to the right and bottom store the deltas from this pixel.
+/// The first row and column store deltas from a linear predictor (which tries to keep dhdx/dhdy constant).
+/// The remaining pixels store deltas from a plane predictor, which assumes the point is on the same plane as its
+/// neighbours to the left, top, and top-left.
+///
+/// Since deltas can be both positive and negative, and water pixels have a fixed magic height value, the deltas are
+/// also transformed. We assume that the largest possible delta in a pixel is 7000m, so we store the deltas as unsigned
+/// integers, where 7000m indicates 0 delta. We also have a special value of 15000 for any delta that leads to a water
+/// pixel.
+///
+/// ### Paletting
+/// If there are 256 or values (not including the first pixel), a palette is used, with each other pixel referring to a
+/// value stored in the palette.
+///
+/// If variance in the palette or prediction deltas can fit within a byte, all the 16 bit values are compressed into 1
+/// byte, with an offset from the minimum.
 pub const FORMAT_VERSION: u16 = 5;
 
 pub enum LoadError {
