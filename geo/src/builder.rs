@@ -2,18 +2,11 @@ use std::{
 	collections::{HashMap, HashSet},
 	fs::{File, OpenOptions},
 	io::{Seek, SeekFrom, Write},
+	mem::ManuallyDrop,
 	path::Path,
 	sync::RwLock,
 };
 
-use libwebp_sys::{
-	WebPEncode,
-	WebPImageHint,
-	WebPInitConfig,
-	WebPPicture,
-	WebPPictureImportRGBA,
-	WebPPictureInit,
-};
 use zstd::Encoder;
 
 use crate::{map_lat_lon_to_index, Dataset, TileMetadata, FORMAT_VERSION};
@@ -70,7 +63,7 @@ impl DatasetBuilder {
 		let mapped = Self::transform_map(self.metadata.height_resolution, data);
 		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
 
-		let compressed = Self::compress_webp(predicted, self.metadata.resolution)?;
+		let compressed = Self::compress_zstd(predicted)?;
 
 		tracy::zone!("Write");
 		let index = map_lat_lon_to_index(lat, lon);
@@ -101,46 +94,58 @@ impl DatasetBuilder {
 
 	pub fn finish(self) -> Result<(), std::io::Error> { self.flush() }
 
-	fn transform_map(height_res: u16, mut data: Vec<i16>) -> Vec<i16> {
+	fn transform_map(height_res: u16, data: Vec<i16>) -> Vec<u16> {
 		tracy::zone!("Map height");
 
-		for height in &mut data {
-			let h = *height + 500;
-			let h = h as f32 / height_res as f32;
-			*height = h.round() as i16
-		}
+		unsafe {
+			let mut data = ManuallyDrop::new(data);
+			let ptr = data.as_mut_ptr() as *mut u16;
+			let len = data.len();
+			let cap = data.capacity();
+			let mut data = Vec::from_raw_parts(ptr, len, cap);
 
-		data
+			for height in data.iter_mut() {
+				let h = *height + 500;
+				let h = h as f32 / height_res as f32;
+				*height = h.round() as u16;
+			}
+
+			data
+		}
 	}
 
-	fn transform_prediction(res: usize, mut data: Vec<i16>) -> Vec<i16> {
+	fn transform_prediction(res: usize, mut data: Vec<u16>) -> Vec<u16> {
 		tracy::zone!("Map prediction");
 
-		fn delta(previous: i16, actual: i16) -> i16 {
-			if actual == -500 {
-				7000
+		fn delta(previous: u16, actual: u16) -> u16 {
+			if actual == 0 {
+				// water
+				15000
 			} else {
-				actual - previous
+				let signed = actual as i16 - previous as i16;
+				(signed + 7000) as u16
 			}
 		}
 
-		fn predict_linear(previous: i16, current: i16, actual: i16) -> i16 {
-			if actual == -500 {
-				7000
+		fn predict_linear(previous: u16, current: u16, actual: u16) -> u16 {
+			if actual == 0 {
+				15000
 			} else {
-				let delta = current - previous;
-				let pred = current + delta;
-				actual - pred
+				let delta = current as i16 - previous as i16;
+				let pred = current as i16 + delta;
+				let signed = actual as i16 - pred;
+				(signed + 7000) as u16
 			}
 		}
 
-		fn predict_plane(left: i16, above: i16, top_left: i16, actual: i16) -> i16 {
-			if actual == -500 {
-				7000
+		fn predict_plane(left: u16, above: u16, top_left: u16, actual: u16) -> u16 {
+			if actual == 0 {
+				15000
 			} else {
-				let dhdy = left - top_left;
-				let pred = above + dhdy;
-				actual - pred
+				let dhdy = left as i16 - top_left as i16;
+				let pred = above as i16 + dhdy;
+				let signed = actual as i16 - pred;
+				(signed + 7000) as u16
 			}
 		}
 
@@ -175,23 +180,34 @@ impl DatasetBuilder {
 		data
 	}
 
-	/*fn try_palette(data: Vec<i16>) -> Vec<u8> {
+	fn try_palette(data: Vec<u16>) -> Vec<u8> {
 		tracy::zone!("Palette");
 
 		let mut uniques = HashSet::with_capacity(256);
 		let mut min = 0;
 		let mut max = 0;
-		for &value in data.iter() {
+		for &value in data[1..].iter() {
 			uniques.insert(value);
 			min = min.min(value);
-			max = max.max(value)
+			max = max.max(value);
 		}
 
 		if uniques.len() > 256 {
-			if min >= i8::MIN as i16 && max <= i8::MAX as i16 {
-				data.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
+			if max - min < u8::MAX as u16 {
+				std::iter::once(min.to_le_bytes())
+					.flatten()
+					.chain(std::iter::once(data[0].to_le_bytes()).flatten())
+					.chain(
+						data[1..]
+							.iter()
+							.map(|x| if *x == 15000 { 0 } else { (*x - min + 1) as u8 }),
+					)
+					.collect()
 			} else {
-				data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+				std::iter::once(min.to_le_bytes())
+					.flatten()
+					.chain(data.into_iter().flat_map(|x| (x - min).to_le_bytes()))
+					.collect()
 			}
 		} else {
 			let mut map = HashMap::with_capacity(uniques.len());
@@ -202,30 +218,35 @@ impl DatasetBuilder {
 				map.insert(x, i as u8);
 			}
 
+			let mut max = 0;
 			for offset in (0..sorted.len() - 1).rev() {
 				sorted[offset + 1] -= sorted[offset];
+				max = max.max(sorted[offset + 1]);
 			}
 
-			let iter: Vec<_> = if min >= i8::MIN as i16 && max <= i8::MAX as i16 {
-				sorted.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
+			let len = sorted.len();
+			let palette: Vec<_> = if max <= u8::MAX as u16 {
+				sorted.into_iter().map(|x| x as u8).collect()
 			} else {
 				sorted.into_iter().flat_map(|x| x.to_le_bytes()).collect()
 			};
-			std::iter::once(iter.len() as u8)
-				.chain(iter)
-				.chain(data.into_iter().map(|h| map[&h]))
+
+			std::iter::once(len as u8)
+				.chain(palette)
+				.chain(std::iter::once(data[0].to_le_bytes()).flatten())
+				.chain(data[1..].iter().map(|h| map[h]))
 				.collect()
 		}
-	}*/
+	}
 
-	/*fn compress_zstd(data: Vec<i16>) -> Result<Vec<u8>, std::io::Error> {
+	fn compress_zstd(data: Vec<u16>) -> Result<Vec<u8>, std::io::Error> {
 		let paletted = Self::try_palette(data);
 
 		let mut temp = Vec::new();
 		{
 			tracy::zone!("Compress");
 
-			let mut encoder = Encoder::new(&mut temp, 21)?;
+			let mut encoder = Encoder::new(&mut temp, 22)?;
 			encoder.set_pledged_src_size(Some(paletted.len() as u64))?;
 			encoder.include_magicbytes(false)?;
 			encoder.include_checksum(false)?;
@@ -239,67 +260,6 @@ impl DatasetBuilder {
 		}
 
 		Ok(temp)
-	}*/
-
-	fn compress_webp(data: Vec<i16>, res: u16) -> Result<Vec<u8>, std::io::Error> {
-		let mut min = 0;
-		let mut max = 0;
-		for &value in data.iter() {
-			min = min.min(value);
-			max = max.max(value);
-		}
-
-		let data: Vec<_> = if max <= i8::MAX as i16 && min >= i8::MIN as i16 {
-            data.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
-        } else {
-			data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
-		};
-
-		unsafe {
-			tracy::zone!("Compress");
-
-			let mut temp = Vec::new();
-
-			let mut config = std::mem::zeroed();
-			WebPInitConfig(&mut config);
-			config.lossless = 1;
-			config.quality = 100.0;
-			config.method = 3;
-			config.image_hint = WebPImageHint::WEBP_HINT_DEFAULT;
-			config.exact = 1;
-
-			let mut picture = std::mem::zeroed();
-			WebPPictureInit(&mut picture);
-			picture.use_argb = 1;
-			picture.writer = Some(write);
-			picture.custom_ptr = &mut temp as *mut _ as _;
-			picture.width = res as i32 / 2;
-			picture.height = if data.len() == (res * res) as usize {
-				res as i32 / 2
-			} else {
-				res as _
-			};
-
-			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, res as i32 * 2);
-
-			WebPEncode(&config, &mut picture);
-
-			if picture.error_code as i32 != 0 {
-				return Err(std::io::Error::new(
-					std::io::ErrorKind::Other,
-					format!("WebPEncode failed: {}", picture.error_code as i32),
-				));
-			}
-
-			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
-				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
-				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
-
-				1
-			}
-
-			Ok(temp)
-		}
 	}
 
 	fn write_to_file(
