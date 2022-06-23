@@ -175,16 +175,24 @@ impl DatasetBuilder {
 		data
 	}
 
-	fn try_palette(data: Vec<i16>) -> Vec<u8> {
+	/*fn try_palette(data: Vec<i16>) -> Vec<u8> {
 		tracy::zone!("Palette");
 
 		let mut uniques = HashSet::with_capacity(256);
-		for value in data.iter() {
-			uniques.insert(*value);
+		let mut min = 0;
+		let mut max = 0;
+		for &value in data.iter() {
+			uniques.insert(value);
+			min = min.min(value);
+			max = max.max(value)
 		}
 
 		if uniques.len() > 256 {
-			data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+			if min >= i8::MIN as i16 && max <= i8::MAX as i16 {
+				data.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
+			} else {
+				data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+			}
 		} else {
 			let mut map = HashMap::with_capacity(uniques.len());
 			let mut sorted: Vec<_> = uniques.into_iter().collect();
@@ -198,14 +206,19 @@ impl DatasetBuilder {
 				sorted[offset + 1] -= sorted[offset];
 			}
 
-			std::iter::once(sorted.len() as u8)
-				.chain(sorted.into_iter().flat_map(|x| x.to_le_bytes()))
+			let iter: Vec<_> = if min >= i8::MIN as i16 && max <= i8::MAX as i16 {
+				sorted.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
+			} else {
+				sorted.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+			};
+			std::iter::once(iter.len() as u8)
+				.chain(iter)
 				.chain(data.into_iter().map(|h| map[&h]))
 				.collect()
 		}
-	}
+	}*/
 
-	fn compress_zstd(data: Vec<i16>) -> Result<Vec<u8>, std::io::Error> {
+	/*fn compress_zstd(data: Vec<i16>) -> Result<Vec<u8>, std::io::Error> {
 		let paletted = Self::try_palette(data);
 
 		let mut temp = Vec::new();
@@ -226,9 +239,22 @@ impl DatasetBuilder {
 		}
 
 		Ok(temp)
-	}
+	}*/
 
 	fn compress_webp(data: Vec<i16>, res: u16) -> Result<Vec<u8>, std::io::Error> {
+		let mut min = 0;
+		let mut max = 0;
+		for &value in data.iter() {
+			min = min.min(value);
+			max = max.max(value);
+		}
+
+		let data: Vec<_> = if max <= i8::MAX as i16 && min >= i8::MIN as i16 {
+            data.into_iter().flat_map(|x| (x as i8).to_le_bytes()).collect()
+        } else {
+			data.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+		};
+
 		unsafe {
 			tracy::zone!("Compress");
 
@@ -248,7 +274,11 @@ impl DatasetBuilder {
 			picture.writer = Some(write);
 			picture.custom_ptr = &mut temp as *mut _ as _;
 			picture.width = res as i32 / 2;
-			picture.height = res as _;
+			picture.height = if data.len() == (res * res) as usize {
+				res as i32 / 2
+			} else {
+				res as _
+			};
 
 			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, res as i32 * 2);
 
