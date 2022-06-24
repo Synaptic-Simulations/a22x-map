@@ -61,7 +61,7 @@ impl DatasetBuilder {
 	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
 		let mapped = Self::transform_map(self.metadata.height_resolution, data);
 		let predicted = Self::transform_prediction(self.metadata.resolution as _, mapped);
-		let paletted = Self::try_palette(predicted);
+		let paletted = Self::palette(predicted);
 		let compressed = Self::compress(paletted)?;
 
 		tracy::zone!("Write");
@@ -111,7 +111,7 @@ impl DatasetBuilder {
 		fn delta(previous: u16, actual: u16) -> u16 {
 			if actual == 0 {
 				// water
-				15000
+				0
 			} else {
 				let signed = actual as i16 - previous as i16;
 				(signed + 7000) as u16
@@ -120,7 +120,7 @@ impl DatasetBuilder {
 
 		fn predict_linear(previous: u16, current: u16, actual: u16) -> u16 {
 			if actual == 0 {
-				15000
+				0
 			} else {
 				let delta = current as i16 - previous as i16;
 				let pred = current as i16 + delta;
@@ -131,7 +131,7 @@ impl DatasetBuilder {
 
 		fn predict_plane(left: u16, above: u16, top_left: u16, actual: u16) -> u16 {
 			if actual == 0 {
-				15000
+				0
 			} else {
 				let dhdy = left as i16 - top_left as i16;
 				let pred = above as i16 + dhdy;
@@ -171,7 +171,7 @@ impl DatasetBuilder {
 		data
 	}
 
-	fn try_palette(data: Vec<u16>) -> Vec<u8> {
+	fn palette(data: Vec<u16>) -> Vec<u8> {
 		tracy::zone!("Palette");
 
 		let mut uniques = HashSet::with_capacity(256);
@@ -188,11 +188,7 @@ impl DatasetBuilder {
 				std::iter::once(min.to_le_bytes())
 					.flatten()
 					.chain(std::iter::once(data[0].to_le_bytes()).flatten())
-					.chain(
-						data[1..]
-							.iter()
-							.map(|x| if *x == 15000 { 0 } else { (*x - min + 1) as u8 }),
-					)
+					.chain(data[1..].iter().map(|x| if *x == 0 { 0 } else { (*x - min + 1) as u8 }))
 					.collect()
 			} else {
 				std::iter::once(min.to_le_bytes())
@@ -242,7 +238,7 @@ impl DatasetBuilder {
 			encoder.long_distance_matching(true)?;
 			encoder.include_dictid(false)?;
 			encoder.include_contentsize(false)?;
-			encoder.window_log((data.len() as f32).log2() as u32 + 1)?;
+			encoder.window_log(24)?;
 
 			encoder.write_all(&data)?;
 			encoder.finish()?;

@@ -10,12 +10,10 @@ pub fn load(buffer: &mut Vec<u8>, file: &mut File) -> Result<Dataset, LoadError>
 		.map_err(|_| LoadError::InvalidFileSize)?;
 	let resolution = u16::from_le_bytes(buffer[7..9].try_into().unwrap());
 	let height_resolution = u16::from_le_bytes(buffer[9..11].try_into().unwrap());
-	let delta_compressed = buffer[11] == 1;
 	let metadata = TileMetadata {
 		version: 5,
 		resolution,
 		height_resolution,
-		delta_compressed,
 	};
 
 	let tile_map = buffer[Dataset::VER5_TILE_MAP_OFFSET..Dataset::VER5_TILE_MAP_OFFSET + 360 * 180 * 8]

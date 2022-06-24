@@ -14,7 +14,6 @@ pub fn load(buffer: &mut Vec<u8>, file: &mut File) -> Result<Dataset, LoadError>
 		version: 4,
 		resolution,
 		height_resolution,
-		delta_compressed: false,
 	};
 
 	let tile_map = buffer[Dataset::VER4_TILE_MAP_OFFSET..Dataset::VER4_DICT_OFFSET]

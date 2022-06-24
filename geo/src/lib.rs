@@ -106,7 +106,7 @@ pub use builder::*;
 ///
 /// Since deltas can be both positive and negative, and water pixels have a fixed magic height value, the deltas are
 /// also transformed. We assume that the largest possible delta in a pixel is 7000m, so we store the deltas as unsigned
-/// integers, where 7000m indicates 0 delta. We also have a special value of 15000 for any delta that leads to a water
+/// integers, where 7000m indicates 0 delta. We also have a special value of 0 for any delta that leads to a water
 /// pixel.
 ///
 /// ### Paletting
@@ -114,8 +114,8 @@ pub use builder::*;
 /// value stored in the palette.
 ///
 /// If variance in the palette or prediction deltas can fit within a byte, all the 16 bit values are compressed into 1
-/// byte, with an offset from the minimum.
-pub const FORMAT_VERSION: u16 = 5;
+/// byte (0 now represents water), with an offset from the minimum.
+pub const FORMAT_VERSION: u16 = 6;
 
 pub enum LoadError {
 	InvalidFileSize,
@@ -154,8 +154,6 @@ pub struct TileMetadata {
 	pub resolution: u16,
 	/// The multiplier for the raw stored values.
 	pub height_resolution: u16,
-	/// The resolution of the mini-tiles inside each tile.
-	pub delta_compressed: bool,
 }
 
 pub fn map_lat_lon_to_index(lat: i16, lon: i16) -> usize {

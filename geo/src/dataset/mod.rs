@@ -7,6 +7,7 @@ use crate::{map_lat_lon_to_index, LoadError, TileMetadata};
 mod ver3;
 mod ver4;
 mod ver5;
+mod ver6;
 
 pub struct Dataset {
 	pub(crate) metadata: TileMetadata,
@@ -42,6 +43,7 @@ impl Dataset {
 				3 => ver3::load(&mut buffer, &mut file),
 				4 => ver4::load(&mut buffer, &mut file),
 				5 => ver5::load(&mut buffer, &mut file),
+				6 => ver6::load(&mut buffer, &mut file),
 				_ => Err(LoadError::UnsupportedFormatVersion),
 			}
 		}
@@ -68,6 +70,7 @@ impl Dataset {
 			3 => ver4::get_tile(self, lat, lon),
 			4 => ver4::get_tile(self, lat, lon),
 			5 => ver5::get_tile(self, lat, lon),
+			6 => ver6::get_tile(self, lat, lon),
 			_ => unreachable!(),
 		}
 	}
