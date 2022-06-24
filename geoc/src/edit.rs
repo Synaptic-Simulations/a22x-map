@@ -36,7 +36,6 @@ pub fn edit(edit: Edit) {
 		version: FORMAT_VERSION,
 		resolution: edit.resolution,
 		height_resolution: edit.height_resolution,
-		delta_compressed: edit.delta_compressed,
 	};
 
 	let needs_resize = metadata.resolution != source_metadata.resolution;

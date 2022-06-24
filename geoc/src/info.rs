@@ -45,7 +45,6 @@ pub fn info(info: Info) {
 	println!("  Version: {}", metadata.version);
 	println!("  Resolution: {}", metadata.resolution);
 	println!("  Height resolution: {}", metadata.height_resolution);
-	println!("  Delta compressed: {}", metadata.delta_compressed);
 
 	println!();
 

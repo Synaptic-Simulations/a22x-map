@@ -28,7 +28,6 @@ pub fn upgrade(upgrade: Upgrade) {
 		&upgrade.output,
 		TileMetadata {
 			version: FORMAT_VERSION,
-			delta_compressed: upgrade.delta_compressed,
 			..source.metadata()
 		},
 		|lat, lon, builder| {

@@ -72,19 +72,5 @@ pub fn get_tile(this: &Dataset, lat: i16, lon: i16) -> Option<Result<(Vec<i16>, 
 		})
 		.collect();
 
-	let output = if this.metadata.delta_compressed {
-		let mut output = Vec::with_capacity(res * res * 2);
-		output.resize(output.capacity(), 0);
-
-		output[0] = mapped[0];
-		for i in 1..output.len() {
-			output[i] = output[i - 1] + mapped[i];
-		}
-
-		output
-	} else {
-		mapped
-	};
-
-	Some(Ok((output, frame_size as usize)))
+	Some(Ok((mapped, frame_size as usize)))
 }

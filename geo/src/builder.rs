@@ -81,6 +81,7 @@ impl DatasetBuilder {
 			3 => Dataset::VER3_TILE_MAP_OFFSET,
 			4 => Dataset::VER4_TILE_MAP_OFFSET,
 			5 => Dataset::VER5_TILE_MAP_OFFSET,
+			6 => Dataset::VER5_TILE_MAP_OFFSET,
 			_ => unreachable!(),
 		} as _))?;
 		let slice = unsafe { std::slice::from_raw_parts(locked.tile_map.as_ptr() as _, locked.tile_map.len() * 8) };
@@ -106,36 +107,36 @@ impl DatasetBuilder {
 	}
 
 	fn transform_prediction(res: usize, mut data: Vec<u16>) -> Vec<u16> {
-		tracy::zone!("Map prediction");
+		tracy::zone!("Predict");
 
-		fn delta(previous: u16, actual: u16) -> u16 {
+		fn delta(current: u16, actual: u16) -> u16 {
 			if actual == 0 {
 				// water
 				0
 			} else {
-				let signed = actual as i16 - previous as i16;
+				let signed = actual as i32 - current as i32;
 				(signed + 7000) as u16
 			}
 		}
 
-		fn predict_linear(previous: u16, current: u16, actual: u16) -> u16 {
+		fn linear(previous: u16, current: u16, actual: u16) -> u16 {
 			if actual == 0 {
 				0
 			} else {
-				let delta = current as i16 - previous as i16;
-				let pred = current as i16 + delta;
-				let signed = actual as i16 - pred;
+				let delta = current as i32 - previous as i32;
+				let pred = current as i32 + delta;
+				let signed = actual as i32 - pred;
 				(signed + 7000) as u16
 			}
 		}
 
-		fn predict_plane(left: u16, above: u16, top_left: u16, actual: u16) -> u16 {
+		fn plane(left: u16, top: u16, top_left: u16, actual: u16) -> u16 {
 			if actual == 0 {
 				0
 			} else {
-				let dhdy = left as i16 - top_left as i16;
-				let pred = above as i16 + dhdy;
-				let signed = actual as i16 - pred;
+				let dhdy = left as i32 - top_left as i32;
+				let pred = top as i32 + dhdy;
+				let signed = actual as i32 - pred;
 				(signed + 7000) as u16
 			}
 		}
@@ -147,7 +148,7 @@ impl DatasetBuilder {
 				let above = data[(y - 1) * res + x];
 				let top_left = data[(y - 1) * res + x - 1];
 				let actual = data[y * res + x];
-				data[y * res + x] = predict_plane(left, above, top_left, actual);
+				data[y * res + x] = plane(left, above, top_left, actual);
 			}
 		}
 		// Predict the first row and column, except for (1, 0) and (0, 1).
@@ -155,13 +156,13 @@ impl DatasetBuilder {
 			let previous = data[x - 2];
 			let current = data[x - 1];
 			let actual = data[x];
-			data[x] = predict_linear(previous, current, actual);
+			data[x] = linear(previous, current, actual);
 		}
 		for y in (2..res).rev() {
 			let previous = data[(y - 2) * res];
 			let current = data[(y - 1) * res];
 			let actual = data[y * res];
-			data[y * res] = predict_linear(previous, current, actual);
+			data[y * res] = linear(previous, current, actual);
 		}
 
 		// Predict (0, 1) and (1, 0).
@@ -185,14 +186,14 @@ impl DatasetBuilder {
 
 		if uniques.len() > 256 {
 			if max - min < u8::MAX as u16 {
-				std::iter::once(min.to_le_bytes())
-					.flatten()
+				min.to_le_bytes()
+					.into_iter()
 					.chain(std::iter::once(data[0].to_le_bytes()).flatten())
 					.chain(data[1..].iter().map(|x| if *x == 0 { 0 } else { (*x - min + 1) as u8 }))
 					.collect()
 			} else {
-				std::iter::once(min.to_le_bytes())
-					.flatten()
+				min.to_le_bytes()
+					.into_iter()
 					.chain(data.into_iter().flat_map(|x| (x - min).to_le_bytes()))
 					.collect()
 			}
@@ -206,21 +207,22 @@ impl DatasetBuilder {
 			}
 
 			let mut max = 0;
-			for offset in (0..sorted.len() - 1).rev() {
-				sorted[offset + 1] -= sorted[offset];
-				max = max.max(sorted[offset + 1]);
+			for offset in (1..sorted.len()).rev() {
+				sorted[offset] -= sorted[offset - 1];
+				max = max.max(sorted[offset]);
 			}
 
 			let len = sorted.len();
-			let palette: Vec<_> = if max <= u8::MAX as u16 {
-				sorted.into_iter().map(|x| x as u8).collect()
+			let palette: Vec<_> = if max <= 256 as u16 {
+				sorted[1..].iter().map(|x| (*x - 1) as u8).collect()
 			} else {
-				sorted.into_iter().flat_map(|x| x.to_le_bytes()).collect()
+				sorted[1..].iter().flat_map(|x| (*x - 1).to_le_bytes()).collect()
 			};
 
-			std::iter::once(len as u8)
+			std::iter::once((len - 1) as u8)
+				.chain(sorted[0].to_le_bytes())
 				.chain(palette)
-				.chain(std::iter::once(data[0].to_le_bytes()).flatten())
+				.chain(data[0].to_le_bytes())
 				.chain(data[1..].iter().map(|h| map[h]))
 				.collect()
 		}
@@ -255,7 +257,6 @@ impl DatasetBuilder {
 		header[5..7].copy_from_slice(&metadata.version.to_le_bytes());
 		header[7..9].copy_from_slice(&metadata.resolution.to_le_bytes());
 		header[9..11].copy_from_slice(&metadata.height_resolution.to_le_bytes());
-		header[11] = metadata.delta_compressed as u8;
 
 		file.write_all(&header)?;
 		file.write_all(&0u64.to_le_bytes())?;
