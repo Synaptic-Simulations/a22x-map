@@ -14,11 +14,11 @@ pub struct Generate {
 	input: PathBuf,
 	#[clap(short = 'w', long = "water")]
 	water: PathBuf,
-	#[clap(short = 'o', long = "out", default_value = "output.geo")]
+	#[clap(short = 'o', long = "out")]
 	output: PathBuf,
-	#[clap(short = 'r', long = "res", default_value_t = 1024)]
+	#[clap(short = 'r', long = "res", default_value_t = 1200)]
 	resolution: u16,
-	#[clap(short = 's', long = "hres", default_value_t = 50)]
+	#[clap(short = 's', long = "hres", default_value_t = 1)]
 	height_resolution: u16,
 	#[clap(short = 'd', long = "delta")]
 	delta_compressed: bool,
@@ -43,7 +43,6 @@ pub fn generate(generate: Generate) {
 		version: FORMAT_VERSION,
 		resolution: generate.resolution,
 		height_resolution: generate.height_resolution,
-		delta_compressed: generate.delta_compressed,
 	};
 
 	for_tile_in_output(&generate.output, metadata, |lat, lon, builder| {

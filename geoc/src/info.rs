@@ -50,32 +50,4 @@ pub fn info(info: Info) {
 
 	println!("Tiles");
 	println!("  Tile count: {}", dataset.tile_count());
-
-	let water_tiles = AtomicUsize::new(0);
-	let water_tiles_size = AtomicUsize::new(0);
-	let tiles = 360 * 180;
-	let counter = AtomicUsize::new(1);
-	(0..tiles).into_par_iter().for_each(|index| {
-		let (lat, lon) = map_index_to_lat_lon(index);
-		match dataset.get_tile_and_compressed_size(lat, lon) {
-			Some(Ok((tile, size))) => {
-				if tile.into_iter().all(|h| h == -500) {
-					water_tiles.fetch_add(1, Ordering::Relaxed);
-					water_tiles_size.fetch_add(size, Ordering::Relaxed);
-				}
-			},
-			Some(Err(e)) => {
-				eprintln!("{}", e);
-			},
-			None => {},
-		}
-
-		print!("\r{}/{}", counter.fetch_add(1, Ordering::Relaxed), tiles);
-	});
-	print!("\r");
-	println!("  Water tiles: {}", water_tiles.load(Ordering::Relaxed));
-	println!(
-		"  Water tiles size: {}",
-		Size(water_tiles_size.load(Ordering::Relaxed) as _)
-	);
 }

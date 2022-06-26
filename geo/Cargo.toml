@@ -5,8 +5,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bitpacking = "0.8"
-libwebp-sys = { version = "0.6.0", features = ["avx2", "neon", "sse41"] }
+hcomp = { git = "https://github.com/SparkyPotato/hcomp" }
+jpegxl-rs = { version = "0.6.1", default-features = false }
 memmap2 = "0.5.3"
 tracy = { package = "tracy_full", version = "1.2.0" }
-zstd = { version = "*", features = ["experimental"] }

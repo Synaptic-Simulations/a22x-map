@@ -115,7 +115,18 @@ pub use builder::*;
 ///
 /// If variance in the palette or prediction deltas can fit within a byte, all the 16 bit values are compressed into 1
 /// byte (0 now represents water), with an offset from the minimum.
-pub const FORMAT_VERSION: u16 = 6;
+///
+/// # Format version 7
+/// Deprecate all old versions.
+/// * [0..5]: Magic number: `[115, 117, 115, 115, 121]`.
+/// * [5..7]: The format version, little endian.
+/// * [7..9]: The resolution of the square tile (one side).
+/// * [9..11]: The resolution of height values (round each raw value to the nearest multiple).
+/// * [11..32]: Empty space, for future use. Must be 0.
+/// * [32..32 + 360 * 180 * 8] @ offsets: 360 * 180 `u64`s that store the offsets of the tile in question (from the
+///   beginning of the file). If zero, the tile is not present.
+/// * [offset..]: A hcomp frame containing the compressed data of the tile, until the next tile.
+pub const FORMAT_VERSION: u16 = 7;
 
 pub enum LoadError {
 	InvalidFileSize,
