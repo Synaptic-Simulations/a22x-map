@@ -6,7 +6,14 @@ use std::{
 };
 
 use hcomp::{encode::encode, Heightmap};
-use jpegxl_rs::encode::{EncoderFrame, EncoderSpeed, JxlEncoder};
+use libwebp_sys::{
+	WebPEncode,
+	WebPImageHint::WEBP_HINT_GRAPH,
+	WebPInitConfig,
+	WebPPicture,
+	WebPPictureImportRGBA,
+	WebPPictureInit,
+};
 
 use crate::{map_lat_lon_to_index, Dataset, TileMetadata, FORMAT_VERSION};
 
@@ -70,20 +77,47 @@ impl DatasetBuilder {
 				.collect()
 		};
 
-		let water = {
+		let water = unsafe {
 			tracy::zone!("Compress water");
-			JxlEncoder {
-				lossless: true,
-				speed: EncoderSpeed::Tortoise,
-				use_container: false,
-				..Default::default()
+
+			let mut temp = Vec::new();
+
+			let mut config = std::mem::zeroed();
+			WebPInitConfig(&mut config);
+			config.lossless = 1;
+			config.quality = 100.0;
+			config.method = 3;
+			config.image_hint = WEBP_HINT_GRAPH;
+			config.exact = 1;
+
+			let mut picture = std::mem::zeroed();
+			WebPPictureInit(&mut picture);
+			picture.use_argb = 1;
+			picture.writer = Some(write);
+			picture.custom_ptr = &mut temp as *mut _ as _;
+			let res = self.metadata.resolution as i32;
+			picture.width = res / 2;
+			picture.height = res / 2;
+
+			WebPPictureImportRGBA(&mut picture, water.as_ptr() as _, res * 2);
+
+			WebPEncode(&config, &mut picture);
+
+			if picture.error_code as i32 != 0 {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					format!("WebPEncode failed: {}", picture.error_code as i32),
+				));
 			}
-			.encode_frame(
-				&EncoderFrame::new(&water).num_channels(1),
-				self.metadata.resolution as _,
-				self.metadata.resolution as _,
-			)?
-			.data
+
+			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
+				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
+				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
+
+				1
+			}
+
+			temp
 		};
 
 		let data: Vec<_> = {

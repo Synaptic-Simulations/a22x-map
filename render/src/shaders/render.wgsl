@@ -77,7 +77,9 @@ fn project(uv: vec2<f32>) -> LatLon {
 }
 
 fn map_height(height: i32) -> vec3<f32> {
-    if (height == -500) {
+    let is_water = ((height >> 13u) & 1) == 1;
+    let height = ~(1 << 13u) & height;
+    if (is_water) {
         return water;
     } else {
         let feet = i32(f32(height) * 3.28084);

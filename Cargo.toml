@@ -12,3 +12,6 @@ opt-level = 3
 
 [profile.release]
 debug = true
+
+[patch."https://github.com/SparkyPotato/hcomp"]
+hcomp = { path = "../hcomp" }

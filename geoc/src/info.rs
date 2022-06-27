@@ -1,12 +1,7 @@
-use std::{
-	fmt::Display,
-	path::PathBuf,
-	sync::atomic::{AtomicUsize, Ordering},
-};
+use std::{fmt::Display, path::PathBuf};
 
 use clap::Args;
-use geo::{map_index_to_lat_lon, Dataset};
-use rayon::prelude::*;
+use geo::Dataset;
 
 #[derive(Args)]
 /// Give information about the dataset.

@@ -1,6 +1,7 @@
 use std::{fs::File, io::Read, path::Path};
 
 use hcomp::decode::decode;
+use libwebp_sys::WebPDecodeRGBAInto;
 use memmap2::{Mmap, MmapOptions};
 
 use crate::{map_lat_lon_to_index, LoadError, TileMetadata, FORMAT_VERSION};
@@ -76,17 +77,48 @@ impl Dataset {
 
 		let (data, len) = {
 			tracy::zone!("Decompress height");
-			decode(frame, res, res)?
+			match decode(frame, res, res) {
+				Ok(x) => x,
+				Err(e) => return Some(Err(e)),
+			}
 		};
-		let data = {
+		let mut data: Vec<_> = {
 			tracy::zone!("Unmap height");
-			x.data
-				.to_vec()
+			data.data
+				.into_owned()
 				.into_iter()
 				.map(|x| (x * self.metadata.height_resolution) as i16 - 500)
 				.collect()
 		};
+		let water = unsafe {
+			tracy::zone!("Decompress water");
 
-		Some()
+			let frame = &frame[len..];
+			let frame_size = u32::from_le_bytes(frame[4..8].try_into().unwrap()) + 8;
+			let frame = &frame[..frame_size as usize];
+			let mut decompressed = vec![0; res as usize * res as usize];
+			if WebPDecodeRGBAInto(
+				frame.as_ptr(),
+				frame.len(),
+				decompressed.as_mut_ptr(),
+				decompressed.len(),
+				res as i32 * 2,
+			)
+			.is_null()
+			{
+				return Some(Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					"WebPDecodeRGBAInto failed",
+				)));
+			}
+
+			decompressed
+		};
+
+		for (h, w) in data.iter_mut().zip(water) {
+			*h |= (w as i16) << 13;
+		}
+
+		Some(Ok(data))
 	}
 }

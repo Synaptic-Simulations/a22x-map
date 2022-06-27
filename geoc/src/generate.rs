@@ -20,8 +20,6 @@ pub struct Generate {
 	resolution: u16,
 	#[clap(short = 's', long = "hres", default_value_t = 1)]
 	height_resolution: u16,
-	#[clap(short = 'd', long = "delta")]
-	delta_compressed: bool,
 }
 
 pub fn generate(generate: Generate) {
@@ -57,21 +55,27 @@ pub fn generate(generate: Generate) {
 
 		source
 			.get_data(bottom_left, top_right, metadata.resolution as _)
-			.and_then(|data| {
+			.and_then(|data: Vec<i16>| {
 				tracy::zone!("Load water");
 				water
 					.get_data(bottom_left, top_right, metadata.resolution as _)
 					.map(|water: Vec<u8>| (data, water))
 			})
-			.map(|(mut data, water)| {
+			.and_then(|(mut data, water)| {
 				tracy::zone!("Merge water mask");
 
+				let mut water_count = 0;
 				for (height, &mask) in data.iter_mut().zip(water.iter()) {
-					if mask != 0 {
-						*height = -500;
-					}
+					let mask = mask as i16;
+					*height |= mask << 13;
+					water_count += mask as u32;
 				}
-				builder.add_tile(lat, lon, data)
+
+				if water_count != metadata.resolution as u32 * metadata.resolution as u32 {
+					Some(builder.add_tile(lat, lon, data))
+				} else {
+					None
+				}
 			})
 			.transpose()?;
 
