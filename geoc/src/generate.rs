@@ -61,15 +61,19 @@ pub fn generate(generate: Generate) {
 					.get_data(bottom_left, top_right, metadata.resolution as _)
 					.map(|water: Vec<u8>| (data, water))
 			})
-			.and_then(|(mut data, water)| {
+			.and_then(|(data, water)| {
 				tracy::zone!("Merge water mask");
 
 				let mut water_count = 0;
-				for (height, &mask) in data.iter_mut().zip(water.iter()) {
-					let mask = mask as i16;
-					*height |= mask << 13;
-					water_count += mask as u32;
-				}
+				let data = data
+					.into_iter()
+					.zip(water.into_iter())
+					.map(|(h, w)| {
+						let positive = (h + 500) as u16;
+						water_count += w as u32;
+						positive | (w as u16) << 15
+					})
+					.collect();
 
 				if water_count != metadata.resolution as u32 * metadata.resolution as u32 {
 					Some(builder.add_tile(lat, lon, data))

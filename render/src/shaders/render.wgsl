@@ -23,7 +23,7 @@ var tile_map: texture_2d<u32>;
 [[group(0), binding(2)]]
 var<storage, read_write> tile_status: TileStatus;
 [[group(0), binding(3)]]
-var tile_atlas: texture_2d<i32>;
+var tile_atlas: texture_2d<u32>;
 [[group(0), binding(4)]]
 var hillshade_atlas: texture_2d<f32>;
 
@@ -76,13 +76,13 @@ fn project(uv: vec2<f32>) -> LatLon {
     return LatLon(lat, lon);
 }
 
-fn map_height(height: i32) -> vec3<f32> {
-    let is_water = ((height >> 13u) & 1) == 1;
-    let height = ~(1 << 13u) & height;
+fn map_height(height: u32) -> vec3<f32> {
+    let is_water = ((height >> 15u) & 1u) == 1u;
+    let height = ~(1u << 15u) & height;
     if (is_water) {
         return water;
     } else {
-        let feet = i32(f32(height) * 3.28084);
+        let feet = i32(f32(i32(height) - 500) * 3.28084);
         if (feet - 2000 > i32(uniforms.altitude)) {
             return taws_red;
         } else if (feet > i32(uniforms.altitude - 500.0)) {

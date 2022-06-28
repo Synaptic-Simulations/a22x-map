@@ -63,7 +63,7 @@ impl Dataset {
 
 	pub fn tile_count(&self) -> usize { self.tile_map.iter().filter(|&&x| x != 0).count() }
 
-	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<i16>, std::io::Error>> {
+	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<u16>, std::io::Error>> {
 		tracy::zone!("Get Tile");
 
 		let index = map_lat_lon_to_index(lat, lon);
@@ -87,7 +87,7 @@ impl Dataset {
 			data.data
 				.into_owned()
 				.into_iter()
-				.map(|x| (x * self.metadata.height_resolution) as i16 - 500)
+				.map(|x| x * self.metadata.height_resolution)
 				.collect()
 		};
 		let water = unsafe {
@@ -116,7 +116,7 @@ impl Dataset {
 		};
 
 		for (h, w) in data.iter_mut().zip(water) {
-			*h |= (w as i16) << 13;
+			*h |= (w as u16) << 15;
 		}
 
 		Some(Ok(data))

@@ -143,7 +143,7 @@ impl Renderer {
 					binding: 3,
 					visibility: ShaderStages::FRAGMENT,
 					ty: BindingType::Texture {
-						sample_type: TextureSampleType::Sint,
+						sample_type: TextureSampleType::Uint,
 						view_dimension: TextureViewDimension::D2,
 						multisampled: false,
 					},

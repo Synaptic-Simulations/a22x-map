@@ -65,13 +65,13 @@ impl DatasetBuilder {
 		self.locked.read().unwrap().tile_map[index] != 0
 	}
 
-	/// data: heights in meters, with the 14th bit set if pixel is water.
-	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<i16>) -> Result<(), std::io::Error> {
+	/// data: `height + 500`s in meters with the 16th bit set if pixel is water.
+	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<u16>) -> Result<(), std::io::Error> {
 		let water: Vec<_> = {
 			tracy::zone!("Water mask");
 			data.iter()
 				.map(|&x| {
-					let x = x as u16 >> 13;
+					let x = x as u16 >> 15;
 					x as u8 & 1
 				})
 				.collect()
@@ -124,8 +124,8 @@ impl DatasetBuilder {
 			tracy::zone!("Map height");
 			data.into_iter()
 				.map(|x| {
-					let mask = !(1 << 13);
-					let positive = (x & mask + 500) as f32;
+					let mask = !(1 << 15);
+					let positive = (x & mask) as f32;
 					let mapped = positive / self.metadata.height_resolution as f32;
 					mapped.round() as u16
 				})

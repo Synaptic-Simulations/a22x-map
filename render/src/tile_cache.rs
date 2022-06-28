@@ -264,7 +264,7 @@ impl Atlas {
 
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
 
-	fn upload_tile(&mut self, queue: &Queue, tile: &[i16]) -> Option<TileOffset> {
+	fn upload_tile(&mut self, queue: &Queue, tile: &[u16]) -> Option<TileOffset> {
 		tracy::zone!("Tile Upload");
 
 		let ret = if let Some(tile) = self.collected_tiles.pop() {
@@ -364,7 +364,7 @@ impl Atlas {
 			mip_level_count: 1,
 			sample_count: 1,
 			dimension: TextureDimension::D2,
-			format: TextureFormat::R16Sint,
+			format: TextureFormat::R16Uint,
 			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
 		};
 

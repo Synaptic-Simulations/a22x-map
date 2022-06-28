@@ -2,10 +2,10 @@ use clap::{Parser, Subcommand};
 
 #[cfg(feature = "generate")]
 use crate::generate::Generate;
-use crate::{edit::Edit, info::Info, upgrade::Upgrade};
+use crate::{info::Info, upgrade::Upgrade};
 
 mod common;
-mod edit;
+// mod edit;
 #[cfg(feature = "generate")]
 mod generate;
 mod info;
@@ -25,7 +25,7 @@ enum Command {
 	Generate(Generate),
 	Upgrade(Upgrade),
 	Info(Info),
-	Edit(Edit),
+	// Edit(Edit),
 }
 
 fn main() {
@@ -35,6 +35,6 @@ fn main() {
 		Command::Generate(generate) => generate::generate(generate),
 		Command::Upgrade(upgrade) => upgrade::upgrade(upgrade),
 		Command::Info(info) => info::info(info),
-		Command::Edit(edit) => edit::edit(edit),
+		// Command::Edit(edit) => edit::edit(edit),
 	}
 }

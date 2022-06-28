@@ -64,7 +64,7 @@ pub fn for_tile_in_output(
 		print!("\r{}/{}", counter.load(Ordering::Relaxed), tiles);
 		(0..tiles).into_par_iter().for_each(|index| {
 			tracy::zone!("Process tile");
-			if had_error.load(Ordering::Acquire) || was_quit.load(Ordering::Acquire) {
+			if was_quit.load(Ordering::Acquire) {
 				return;
 			}
 
@@ -73,7 +73,7 @@ pub fn for_tile_in_output(
 				match exec(lat, lon, &rbuilder) {
 					Ok(_) => {},
 					Err(e) => {
-						println!("Error in tile {}, {}: {}", lat, lon, e);
+						println!("\nError in tile {}, {}: {}", lat, lon, e);
 						had_error.store(true, Ordering::Release);
 					},
 				}
