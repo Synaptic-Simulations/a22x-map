@@ -26,7 +26,8 @@ use wgpu::{
 use crate::range::{Range, RANGES, RANGE_TO_DEGREES};
 
 pub enum UploadStatus {
-	Ok,
+	Uploads,
+	NoUploads,
 	Resized,
 	AtlasFull,
 }
@@ -92,7 +93,7 @@ impl TileCache {
 		}
 		let meta = self.atlas.lods[range as usize];
 
-		let mut ret = UploadStatus::Ok;
+		let mut ret = UploadStatus::NoUploads;
 		{
 			let _ = self.tile_status.slice(..).map_async(MapMode::Read);
 
@@ -118,6 +119,7 @@ impl TileCache {
 						continue;
 					}
 
+					ret = UploadStatus::Uploads;
 					let lon = lon as i16 - 180;
 					let lat = lat as i16 - 90;
 					let dataset = &self.atlas.datasets[meta];
@@ -159,27 +161,31 @@ impl TileCache {
 
 		self.tile_status.unmap();
 
-		tracy::zone!("Tile Map Upload");
+		{
+			if let UploadStatus::Uploads | UploadStatus::Resized = ret {
+				tracy::zone!("Tile Map Upload");
 
-		queue.write_texture(
-			self.tile_map.as_image_copy(),
-			unsafe {
-				std::slice::from_raw_parts(
-					self.tiles.as_ptr() as _,
-					self.tiles.len() * std::mem::size_of::<TileOffset>(),
-				)
-			},
-			ImageDataLayout {
-				offset: 0,
-				bytes_per_row: Some(NonZeroU32::new(std::mem::size_of::<TileOffset>() as u32 * 360).unwrap()),
-				rows_per_image: Some(NonZeroU32::new(180).unwrap()),
-			},
-			Extent3d {
-				width: 360,
-				height: 180,
-				depth_or_array_layers: 1,
-			},
-		);
+				queue.write_texture(
+					self.tile_map.as_image_copy(),
+					unsafe {
+						std::slice::from_raw_parts(
+							self.tiles.as_ptr() as _,
+							self.tiles.len() * std::mem::size_of::<TileOffset>(),
+						)
+					},
+					ImageDataLayout {
+						offset: 0,
+						bytes_per_row: Some(NonZeroU32::new(std::mem::size_of::<TileOffset>() as u32 * 360).unwrap()),
+						rows_per_image: Some(NonZeroU32::new(180).unwrap()),
+					},
+					Extent3d {
+						width: 360,
+						height: 180,
+						depth_or_array_layers: 1,
+					},
+				);
+			}
+		}
 
 		ret
 	}

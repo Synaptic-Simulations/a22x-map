@@ -203,10 +203,6 @@ impl Renderer {
 	) {
 		tracy::zone!("Map Render");
 
-		if let UploadStatus::Resized = self.cache.populate_tiles(device, queue, options.range) {
-			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
-		}
-
 		{
 			tracy::zone!("Tile Status Clear");
 
@@ -218,26 +214,37 @@ impl Renderer {
 			);
 		}
 
-		tracy::zone!("Render");
+		{
+			tracy::zone!("Render");
 
-		let mut pass = tracy::wgpu_render_pass!(
-			encoder,
-			RenderPassDescriptor {
-				label: Some("Map Render Pass"),
-				color_attachments: &[RenderPassColorAttachment {
-					view,
-					resolve_target: None,
-					ops: Operations {
-						load: LoadOp::Clear(Color::BLACK),
-						store: true,
-					},
-				}],
-				depth_stencil_attachment: None,
-			}
-		);
-		pass.set_pipeline(&self.pipeline);
-		pass.set_bind_group(0, &self.group, &[]);
-		pass.draw(0..3, 0..1);
+			let mut pass = tracy::wgpu_render_pass!(
+				encoder,
+				RenderPassDescriptor {
+					label: Some("Map Render Pass"),
+					color_attachments: &[RenderPassColorAttachment {
+						view,
+						resolve_target: None,
+						ops: Operations {
+							load: LoadOp::Clear(Color::BLACK),
+							store: true,
+						},
+					}],
+					depth_stencil_attachment: None,
+				}
+			);
+			pass.set_pipeline(&self.pipeline);
+			pass.set_bind_group(0, &self.group, &[]);
+			pass.draw(0..3, 0..1);
+		}
+
+		match self.cache.populate_tiles(device, queue, options.range) {
+			UploadStatus::Uploads => self.render(options, device, queue, view, encoder),
+			UploadStatus::Resized => {
+				self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
+				self.render(options, device, queue, view, encoder)
+			},
+			_ => {},
+		}
 	}
 
 	pub fn resize(&mut self, width: u32, height: u32) { self.aspect_ratio = width as f32 / height as f32; }

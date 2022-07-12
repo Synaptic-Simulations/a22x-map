@@ -1,0 +1,16 @@
+[package]
+name = "map-server"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+render = { path = "../render" }
+
+crossbeam-queue = "0.3.5"
+dashmap = "5.3.4"
+futures-lite = "1.12.0"
+png = "0.17.5"
+rouille = "3.5.0"
+tracy = { package = "tracy_full", version = "1.2.0", features = ["enable", "tracing", "wgpu"] }
+url = "2.2.2"
+wgpu = "0.12.0"
