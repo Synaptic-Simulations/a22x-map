@@ -1479,7 +1479,6 @@ dependencies = [
 name = "map-server"
 version = "0.1.0"
 dependencies = [
- "crossbeam-queue",
  "dashmap",
  "futures-lite 1.12.0",
  "png",

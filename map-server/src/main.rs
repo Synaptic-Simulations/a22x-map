@@ -1,6 +1,11 @@
-use std::{error::Error, io::Write, num::NonZeroU32, path::PathBuf, sync::Mutex};
+use std::{
+	error::Error,
+	io::Write,
+	num::{NonZeroU32, NonZeroUsize},
+	path::PathBuf,
+	sync::Mutex,
+};
 
-use crossbeam_queue::SegQueue;
 use dashmap::DashMap;
 use futures_lite::future::block_on;
 use png::{BitDepth, ColorType, Encoder};
@@ -93,10 +98,11 @@ fn main() {
 		1,
 		timestamp_query,
 	));
-	let size_to_renderer: DashMap<(u32, u32), SegQueue<RenderData>> = DashMap::new();
+	let id_to_renderer: DashMap<u32, RenderData> = DashMap::new();
 
-	rouille::start_server(
+	rouille::start_server_with_pool(
 		"0.0.0.0:42069",
+		std::thread::available_parallelism().ok().map(NonZeroUsize::get),
 		move |req| match (|req: &Request| -> Result<_, Box<dyn Error>> {
 			let url = Url::parse(&format!("http://127.0.0.1{}", req.raw_url()))?;
 
@@ -104,6 +110,7 @@ fn main() {
 				return Ok(Response::empty_404());
 			}
 
+			let mut id = 0;
 			let mut res = (0, 0);
 			let mut pos = (0.0, 0.0);
 			let mut heading = 0.0;
@@ -111,6 +118,7 @@ fn main() {
 			let mut altitude = 0.0;
 			for (key, val) in url.query_pairs() {
 				match key.as_ref() {
+					"id" => id = val.parse::<u32>()?,
 					"res" => {
 						let mut split = val.split(',');
 						res.0 = split.next().ok_or("missing res x")?.parse()?;
@@ -121,9 +129,7 @@ fn main() {
 						pos.0 = split.next().ok_or("missing pos lat")?.parse()?;
 						pos.1 = split.next().ok_or("missing pos lon")?.parse()?;
 					},
-					"heading" => {
-						heading = val.parse()?;
-					},
+					"heading" => heading = val.parse()?,
 					"range" => {
 						range = match val.as_ref() {
 							"2" => Range::Nm2,
@@ -138,27 +144,25 @@ fn main() {
 							_ => return Err(From::from("invalid range")),
 						};
 					},
-					"alt" => {
-						altitude = val.parse()?;
-					},
+					"alt" => altitude = val.parse()?,
 					_ => return Err(From::from("unknown query param")),
 				}
 			}
 
-			let mut renderer = if let Some(queue) = size_to_renderer.get(&res) {
-				if let Some(renderer) = queue.pop() {
-					renderer
-				} else {
-					RenderData::new(&device, res.0, res.1, path.clone())
-				}
+			let mut renderer = if let Some(renderer) = id_to_renderer.get_mut(&id) {
+				renderer
 			} else {
-				RenderData::new(&device, res.0, res.1, path.clone())
+				id_to_renderer.insert(id, RenderData::new(&device, res.0, res.1, path.clone()));
+				id_to_renderer.get_mut(&id).unwrap()
 			};
+
+			renderer.renderer.resize(res.0, res.1);
 
 			{
 				let mut profiler = profiler.lock().unwrap();
 				let mut encoder = tracy::wgpu_command_encoder!(device, profiler, Default::default());
 
+				let view = renderer.texture.create_view(&Default::default());
 				renderer.renderer.render(
 					&FrameOptions {
 						position: LatLon { lat: pos.0, lon: pos.1 },
@@ -170,7 +174,7 @@ fn main() {
 					},
 					&device,
 					&queue,
-					&renderer.texture.create_view(&Default::default()),
+					&view,
 					&mut encoder,
 				);
 
@@ -220,14 +224,6 @@ fn main() {
 				enc.finish().unwrap();
 			}
 			renderer.readback_buffer.unmap();
-
-			if let Some(queue) = size_to_renderer.get(&res) {
-				queue.push(renderer);
-			} else {
-				let queue = SegQueue::new();
-				queue.push(renderer);
-				size_to_renderer.insert(res, queue);
-			}
 
 			Ok(Response::from_data("image/png", out))
 		})(req)
