@@ -156,8 +156,7 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
         let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
         let pixel = vec2<f32>(f32(tile_offset.x), f32(tile_offset.y)) + tile_uv * f32(uniforms.tile_size);
         let height = textureLoad(tile_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
-        let hillshade = textureLoad(hillshade_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
-        ret = map_height(height) * mix(0.6, 1.0, hillshade);
+        ret = map_height(height);
     }
     return vec4<f32>(pow(ret, vec3<f32>(2.2)), 1.0);
 }
