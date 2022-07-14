@@ -36,10 +36,7 @@ use wgpu::{
 	VertexState,
 };
 
-use crate::{
-	range::Range,
-	tile_cache::{TileCache, UploadStatus},
-};
+use crate::tile_cache::{TileCache, UploadStatus};
 
 pub mod range;
 mod tile_cache;
@@ -74,8 +71,10 @@ pub struct FrameOptions {
 impl Default for FrameOptions {
 	fn default() -> Self {
 		FrameOptions {
+			width: 100,
+			height: 100,
 			position: LatLon { lat: 0.0, lon: 0.0 },
-			vertical_angle: 1.0,
+			vertical_angle: 0.297,
 			heading: 0.,
 			altitude: 10000.,
 		}
@@ -85,7 +84,6 @@ impl Default for FrameOptions {
 pub struct Renderer {
 	cache: TileCache,
 	cbuffer: Buffer,
-	aspect_ratio: f32,
 	layout: BindGroupLayout,
 	pipeline: RenderPipeline,
 	group: BindGroup,
@@ -190,7 +188,6 @@ impl Renderer {
 		Ok(Self {
 			cache,
 			cbuffer,
-			aspect_ratio,
 			pipeline,
 			group,
 			layout,
@@ -203,7 +200,10 @@ impl Renderer {
 	) {
 		tracy::zone!("Map Render");
 
-		if let UploadState::Resized = self.cache.populate_tiles(device, queue, options.height, 	options.vertical_angle) {
+		if let UploadStatus::Resized = self
+			.cache
+			.populate_tiles(device, queue, options.height, options.vertical_angle)
+		{
 			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
 		}
 
@@ -211,11 +211,7 @@ impl Renderer {
 			tracy::zone!("Tile Status Clear");
 
 			encoder.clear_buffer(self.cache.tile_status(), 0, None);
-			queue.write_buffer(
-				&self.cbuffer,
-				0,
-				&Self::get_cbuffer_data(&self.cache, self.aspect_ratio, options),
-			);
+			queue.write_buffer(&self.cbuffer, 0, &Self::get_cbuffer_data(&self.cache, options));
 		}
 
 		{
@@ -241,8 +237,6 @@ impl Renderer {
 			pass.draw(0..3, 0..1);
 		}
 	}
-
-	pub fn resize(&mut self, width: u32, height: u32) { self.aspect_ratio = width as f32 / height as f32; }
 
 	fn make_bind_group(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache) -> BindGroup {
 		device.create_bind_group(&BindGroupDescriptor {
@@ -273,15 +267,16 @@ impl Renderer {
 		})
 	}
 
-	fn get_cbuffer_data(cache: &TileCache, aspect_ratio: f32, options: &FrameOptions) -> [u8; Self::CBUFFER_SIZE as _] {
+	fn get_cbuffer_data(cache: &TileCache, options: &FrameOptions) -> [u8; Self::CBUFFER_SIZE as _] {
 		let mut data = [0; Self::CBUFFER_SIZE as _];
 
 		data[0..4].copy_from_slice(&options.position.lat.to_radians().to_le_bytes());
 		data[4..8].copy_from_slice(&options.position.lon.to_radians().to_le_bytes());
 
 		data[16..20].copy_from_slice(&options.vertical_angle.to_le_bytes());
+		let aspect_ratio = options.width as f32 / options.height as f32;
 		data[20..24].copy_from_slice(&aspect_ratio.to_le_bytes());
-		data[24..28].copy_from_slice(&cache.tile_size_for_angle(options.vertical_angle).to_le_bytes());
+		data[24..28].copy_from_slice(&cache.tile_size().to_le_bytes());
 		data[28..32].copy_from_slice(&(360. - options.heading).to_radians().to_le_bytes());
 		data[32..36].copy_from_slice(&options.altitude.to_le_bytes());
 

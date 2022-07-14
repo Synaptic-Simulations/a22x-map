@@ -1,5 +1,5 @@
-use egui::{ComboBox, Context, DragValue, Window};
-use render::{range::Range, FrameOptions, Renderer, RendererOptions};
+use egui::{Context, DragValue, Window};
+use render::{FrameOptions, Renderer, RendererOptions};
 use tracy::wgpu::EncoderProfiler;
 use wgpu::{Device, Queue, TextureFormat, TextureView};
 
@@ -20,7 +20,7 @@ impl Ui {
 
 	pub fn update<'a>(
 		&'a mut self, ctx: &Context, device: &Device, queue: &Queue, encoder: &mut EncoderProfiler, view: &TextureView,
-		format: TextureFormat, resolution: (u32, u32),
+		format: TextureFormat,
 	) {
 		Window::new("Settings").show(ctx, |ui| {
 			tracy::zone!("UI Description");
@@ -36,8 +36,6 @@ impl Ui {
 								device,
 								&RendererOptions {
 									data_path: data,
-									width: resolution.0,
-									height: resolution.1,
 									output_format: format,
 								},
 							) {
@@ -71,23 +69,9 @@ impl Ui {
 			ui.horizontal(|ui| {
 				ui.label("Range");
 
-				ComboBox::from_label("")
-					.selected_text(self.options.range.to_str())
-					.show_ui(ui, |ui| {
-						fn range_selector(ui: &mut egui::Ui, set: &mut Range, range: Range) {
-							ui.selectable_value(set, range, range.to_str());
-						}
-
-						range_selector(ui, &mut self.options.range, Range::Nm2);
-						range_selector(ui, &mut self.options.range, Range::Nm5);
-						range_selector(ui, &mut self.options.range, Range::Nm10);
-						range_selector(ui, &mut self.options.range, Range::Nm20);
-						range_selector(ui, &mut self.options.range, Range::Nm40);
-						range_selector(ui, &mut self.options.range, Range::Nm80);
-						range_selector(ui, &mut self.options.range, Range::Nm160);
-						range_selector(ui, &mut self.options.range, Range::Nm320);
-						range_selector(ui, &mut self.options.range, Range::Nm640);
-					});
+				let mut value = self.options.vertical_angle.to_degrees();
+				ui.add(DragValue::new(&mut value).clamp_range(0.0..=360.0).speed(1.0));
+				self.options.vertical_angle = value.to_radians()
 			});
 
 			ui.horizontal(|ui| {
@@ -95,21 +79,6 @@ impl Ui {
 				ui.add(
 					DragValue::new(&mut self.options.heading)
 						.clamp_range(0.0..=360.0)
-						.speed(1.0),
-				);
-			});
-
-			ui.horizontal(|ui| {
-				ui.label("Azimuth");
-				ui.add(
-					DragValue::new(&mut self.options.sun_azimuth)
-						.clamp_range(0.0..=360.0)
-						.speed(1.0),
-				);
-				ui.label("Elevation");
-				ui.add(
-					DragValue::new(&mut self.options.sun_elevation)
-						.clamp_range(0.0..=90.0)
 						.speed(1.0),
 				);
 			});
@@ -129,5 +98,8 @@ impl Ui {
 		}
 	}
 
-	pub fn resize(&mut self, width: u32, height: u32) { self.renderer.as_mut().map(|x| x.resize(width, height)); }
+	pub fn resize(&mut self, width: u32, height: u32) {
+		self.options.width = width;
+		self.options.height = height;
+	}
 }

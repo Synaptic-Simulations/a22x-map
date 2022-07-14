@@ -9,26 +9,25 @@ use std::{
 use dashmap::DashMap;
 use futures_lite::future::block_on;
 use png::{BitDepth, ColorType, Encoder};
-use render::{range::Range, FrameOptions, LatLon, Renderer, RendererOptions};
+use render::{FrameOptions, LatLon, Renderer, RendererOptions};
 use rouille::{try_or_400::ErrJson, Request, Response};
 use tracy::wgpu::ProfileContext;
 use url::Url;
 
 struct RenderData {
 	renderer: Renderer,
+	res: (u32, u32),
 	texture: wgpu::Texture,
 	readback_buffer: wgpu::Buffer,
 	stride: NonZeroU32,
 }
 
 impl RenderData {
-	fn new(device: &wgpu::Device, width: u32, height: u32, path: PathBuf) -> Self {
+	fn new(device: &wgpu::Device, path: PathBuf, width: u32, height: u32) -> Self {
 		let renderer = Renderer::new(
 			device,
 			&RendererOptions {
 				data_path: path,
-				width,
-				height,
 				output_format: wgpu::TextureFormat::Rgba8UnormSrgb,
 			},
 		)
@@ -58,6 +57,7 @@ impl RenderData {
 
 		Self {
 			renderer,
+			res: (width, height),
 			texture,
 			readback_buffer: buffer,
 			stride,
@@ -114,8 +114,8 @@ fn main() {
 			let mut res = (0, 0);
 			let mut pos = (0.0, 0.0);
 			let mut heading = 0.0;
-			let mut range = Range::Nm2;
 			let mut altitude = 0.0;
+			let mut range = 1.0;
 			for (key, val) in url.query_pairs() {
 				match key.as_ref() {
 					"id" => id = val.parse::<u32>()?,
@@ -130,33 +130,21 @@ fn main() {
 						pos.1 = split.next().ok_or("missing pos lon")?.parse()?;
 					},
 					"heading" => heading = val.parse()?,
-					"range" => {
-						range = match val.as_ref() {
-							"2" => Range::Nm2,
-							"5" => Range::Nm5,
-							"10" => Range::Nm10,
-							"20" => Range::Nm20,
-							"40" => Range::Nm40,
-							"80" => Range::Nm80,
-							"160" => Range::Nm160,
-							"320" => Range::Nm320,
-							"640" => Range::Nm640,
-							_ => return Err(From::from("invalid range")),
-						};
-					},
+					"range" => range = val.parse()?,
 					"alt" => altitude = val.parse()?,
 					_ => return Err(From::from("unknown query param")),
 				}
 			}
 
-			let mut renderer = if let Some(renderer) = id_to_renderer.get_mut(&id) {
+			let mut renderer = if let Some(mut renderer) = id_to_renderer.get_mut(&id) {
+				if renderer.res != res {
+					*renderer = RenderData::new(&device, path.clone(), res.0, res.1);
+				}
 				renderer
 			} else {
-				id_to_renderer.insert(id, RenderData::new(&device, res.0, res.1, path.clone()));
+				id_to_renderer.insert(id, RenderData::new(&device, path.clone(), res.0, res.1));
 				id_to_renderer.get_mut(&id).unwrap()
 			};
-
-			renderer.renderer.resize(res.0, res.1);
 
 			{
 				let mut profiler = profiler.lock().unwrap();
@@ -165,11 +153,11 @@ fn main() {
 				let view = renderer.texture.create_view(&Default::default());
 				renderer.renderer.render(
 					&FrameOptions {
+						width: res.0,
+						height: res.1,
 						position: LatLon { lat: pos.0, lon: pos.1 },
-						range,
+						vertical_angle: range,
 						heading,
-						sun_azimuth: 0.0,
-						sun_elevation: 0.0,
 						altitude,
 					},
 					&device,

@@ -14,5 +14,5 @@ where the query parameters are:
 * `res={},{}`: The resolution of the image - width, then height.
 * `pos={},{}`: The position of the center - latitude, then longitude.
 * `heading={}`: The heading of the map in degrees.
-* `range={}`: The range of the map in nautical miles. Valid values are 2, 5, 10, 20, 40, 80, 160, 320, and 640.
+* `range={}`: The vertical range of the map in radians.
 * `alt={}`: The altitude of the aircraft in feet MSL.

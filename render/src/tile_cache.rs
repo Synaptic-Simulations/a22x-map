@@ -23,7 +23,7 @@ use wgpu::{
 	TextureViewDescriptor,
 };
 
-use crate::range::{Range, RANGES, RANGE_TO_DEGREES, radians_per_pixel};
+use crate::range::radians_per_pixel;
 
 pub enum UploadStatus {
 	Uploads,
@@ -90,10 +90,9 @@ impl TileCache {
 
 		let radians_per_pixel = radians_per_pixel(height as _, vertical_angle);
 
-		if self.atlas.needs_clear() {
-			self.clear(range);
+		if self.atlas.needs_clear(radians_per_pixel) {
+			self.clear(radians_per_pixel);
 		}
-		let meta = self.atlas.lods[range as usize];
 
 		let mut ret = UploadStatus::NoUploads;
 		{
@@ -124,10 +123,10 @@ impl TileCache {
 					ret = UploadStatus::Uploads;
 					let lon = lon as i16 - 180;
 					let lat = lat as i16 - 90;
-					let dataset = &self.atlas.datasets[meta];
 					let tile = {
 						tracy::zone!("Load Tile");
 
+						let dataset = &self.atlas.datasets[self.atlas.curr_dataset];
 						if let Some(data) = dataset.get_tile(lat, lon) {
 							match data {
 								Ok(x) => x,
@@ -192,11 +191,11 @@ impl TileCache {
 		ret
 	}
 
-	pub fn clear(&mut self) {
+	pub fn clear(&mut self, radians_per_pixel: f32) {
 		for offset in self.tiles.iter_mut() {
 			*offset = self.atlas.unloaded();
 		}
-		self.atlas.clear(range);
+		self.atlas.clear(radians_per_pixel);
 	}
 
 	pub fn tile_map(&self) -> &TextureView { &self.tile_map_view }
@@ -207,9 +206,7 @@ impl TileCache {
 
 	pub fn hillshade(&self) -> &TextureView { &self.atlas.hillshade_view }
 
-	pub fn tile_size_for_angle(&self, vertical_angle: f32) -> u32 {
-
-	}
+	pub fn tile_size(&self) -> u32 { self.atlas.datasets[self.atlas.curr_dataset].metadata().resolution as _ }
 }
 
 struct Atlas {
@@ -231,7 +228,10 @@ impl Atlas {
 		let datasets: Result<Vec<_>, LoadError> = datasets.into_iter().map(|dir| Dataset::load(&dir)).collect();
 		let datasets = datasets?;
 
-		let lod_densities = datasets.iter().map(|x| radians_per_pixel(x.metadata().resolution as _, 1.0f32.to_radians())).collect();
+		let lod_densities = datasets
+			.iter()
+			.map(|x| radians_per_pixel(x.metadata().resolution as _, 1.0f32.to_radians()))
+			.collect();
 
 		let (width, height) = (4096, 4096);
 		let limits = device.limits();
@@ -240,6 +240,7 @@ impl Atlas {
 		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
 
 		Ok(Self {
+			curr_dataset: datasets.len(),
 			datasets,
 			lod_densities,
 			atlas,
@@ -248,7 +249,6 @@ impl Atlas {
 			hillshade_view,
 			width,
 			height,
-			curr_dataset: datasets.len(),
 			curr_offset: TileOffset::default(),
 			collected_tiles: Vec::new(),
 		})
@@ -257,7 +257,7 @@ impl Atlas {
 	fn get_dataset_for_angle(&self, radians_per_pixel: f32) -> usize {
 		let mut index = 0;
 		for (i, &density) in self.lod_densities.iter().enumerate().rev() {
-			if radians_per_pixel <= density {
+			if radians_per_pixel >= density {
 				index = i;
 				break;
 			}
@@ -270,9 +270,10 @@ impl Atlas {
 		self.get_dataset_for_angle(radians_per_pixel) != self.curr_dataset
 	}
 
-	fn clear(&mut self) {
+	fn clear(&mut self, radians_per_pixel: f32) {
 		self.curr_offset = TileOffset::default();
 		self.collected_tiles.clear();
+		self.curr_dataset = self.get_dataset_for_angle(radians_per_pixel)
 	}
 
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
@@ -280,11 +281,13 @@ impl Atlas {
 	fn upload_tile(&mut self, queue: &Queue, tile: &[u16]) -> Option<TileOffset> {
 		tracy::zone!("Tile Upload");
 
+		let res = self.datasets[self.curr_dataset].metadata().resolution as u32;
+
 		let ret = if let Some(tile) = self.collected_tiles.pop() {
 			tile
 		} else {
 			let ret = self.curr_offset;
-			if ret.y + (self.curr_tile_res) >= self.height {
+			if ret.y + res >= self.height {
 				return None;
 			} else {
 				ret
@@ -305,20 +308,20 @@ impl Atlas {
 			unsafe { std::slice::from_raw_parts(tile.as_ptr() as _, tile.len() * 2) },
 			ImageDataLayout {
 				offset: 0,
-				bytes_per_row: Some(NonZeroU32::new(2 * self.curr_tile_res).unwrap()),
-				rows_per_image: Some(NonZeroU32::new(self.curr_tile_res).unwrap()),
+				bytes_per_row: Some(NonZeroU32::new(2 * res).unwrap()),
+				rows_per_image: Some(NonZeroU32::new(res).unwrap()),
 			},
 			Extent3d {
-				width: self.curr_tile_res,
-				height: self.curr_tile_res,
+				width: res,
+				height: res,
 				depth_or_array_layers: 1,
 			},
 		);
 
-		self.curr_offset.x += self.curr_tile_res;
-		if self.curr_offset.x + self.curr_tile_res >= self.width {
+		self.curr_offset.x += res;
+		if self.curr_offset.x + res >= self.width {
 			self.curr_offset.x = 0;
-			self.curr_offset.y += self.curr_tile_res;
+			self.curr_offset.y += res;
 		}
 
 		Some(ret)
@@ -361,7 +364,6 @@ impl Atlas {
 		self.hillshade_view = hillshade_view;
 		self.width = width;
 		self.height = height;
-		self.curr_tile_res = 0;
 
 		true
 	}

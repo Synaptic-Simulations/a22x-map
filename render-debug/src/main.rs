@@ -151,10 +151,6 @@ fn main() {
 						&mut encoder,
 						&map_view,
 						TextureFormat::Rgba8Unorm,
-						(config.width, config.height),
-						// &view,
-						// config.format,
-						// (config.width, config.height),
 					);
 					blitter.blit(&mut encoder, &view);
 				}
