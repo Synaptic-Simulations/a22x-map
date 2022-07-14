@@ -53,17 +53,21 @@ pub struct LatLon {
 
 pub struct RendererOptions {
 	pub data_path: PathBuf,
-	pub width: u32,
-	pub height: u32,
 	pub output_format: TextureFormat,
 }
 
 pub struct FrameOptions {
+	/// The width of the output texture.
+	pub width: u32,
+	/// The height of the output texture.
+	pub height: u32,
+	/// Position of the center of the map.
 	pub position: LatLon,
-	pub range: Range,
+	/// Vertical angle of the screen, in radians.
+	pub vertical_angle: f32,
+	/// Heading of the aircraft, in degrees.
 	pub heading: f32,
-	pub sun_azimuth: f32,
-	pub sun_elevation: f32,
+	/// Altitude of the aircraft, in meters.
 	pub altitude: f32,
 }
 
@@ -71,10 +75,8 @@ impl Default for FrameOptions {
 	fn default() -> Self {
 		FrameOptions {
 			position: LatLon { lat: 0.0, lon: 0.0 },
-			range: Range::Nm40,
+			vertical_angle: 1.0,
 			heading: 0.,
-			sun_azimuth: 315.,
-			sun_elevation: 45.,
 			altitude: 10000.,
 		}
 	}
@@ -93,11 +95,9 @@ impl Renderer {
 	const CBUFFER_SIZE: u64 = 48;
 
 	pub fn new(device: &Device, options: &RendererOptions) -> Result<Self, LoadError> {
-		let aspect_ratio = options.width as f32 / options.height as f32;
-
 		let sets = std::fs::read_to_string(options.data_path.join("_meta"))?;
 		let datasets = sets.lines().map(|line| options.data_path.join(line)).collect();
-		let cache = TileCache::new(device, aspect_ratio, options.height as _, datasets)?;
+		let cache = TileCache::new(device, datasets)?;
 
 		let cbuffer = device.create_buffer(&BufferDescriptor {
 			label: Some("Map Render Constant Buffer"),
@@ -203,6 +203,10 @@ impl Renderer {
 	) {
 		tracy::zone!("Map Render");
 
+		if let UploadState::Resized = self.cache.populate_tiles(device, queue, options.height, 	options.vertical_angle) {
+			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
+		}
+
 		{
 			tracy::zone!("Tile Status Clear");
 
@@ -235,15 +239,6 @@ impl Renderer {
 			pass.set_pipeline(&self.pipeline);
 			pass.set_bind_group(0, &self.group, &[]);
 			pass.draw(0..3, 0..1);
-		}
-
-		match self.cache.populate_tiles(device, queue, options.range) {
-			UploadStatus::Uploads => self.render(options, device, queue, view, encoder),
-			UploadStatus::Resized => {
-				self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
-				self.render(options, device, queue, view, encoder)
-			},
-			_ => {},
 		}
 	}
 
@@ -284,9 +279,9 @@ impl Renderer {
 		data[0..4].copy_from_slice(&options.position.lat.to_radians().to_le_bytes());
 		data[4..8].copy_from_slice(&options.position.lon.to_radians().to_le_bytes());
 
-		data[16..20].copy_from_slice(&options.range.vertical_radians().to_le_bytes());
+		data[16..20].copy_from_slice(&options.vertical_angle.to_le_bytes());
 		data[20..24].copy_from_slice(&aspect_ratio.to_le_bytes());
-		data[24..28].copy_from_slice(&cache.tile_size_for_range(options.range).to_le_bytes());
+		data[24..28].copy_from_slice(&cache.tile_size_for_angle(options.vertical_angle).to_le_bytes());
 		data[28..32].copy_from_slice(&(360. - options.heading).to_radians().to_le_bytes());
 		data[32..36].copy_from_slice(&options.altitude.to_le_bytes());
 

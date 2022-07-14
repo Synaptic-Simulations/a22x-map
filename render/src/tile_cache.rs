@@ -23,7 +23,7 @@ use wgpu::{
 	TextureViewDescriptor,
 };
 
-use crate::range::{Range, RANGES, RANGE_TO_DEGREES};
+use crate::range::{Range, RANGES, RANGE_TO_DEGREES, radians_per_pixel};
 
 pub enum UploadStatus {
 	Uploads,
@@ -48,7 +48,7 @@ pub struct TileCache {
 }
 
 impl TileCache {
-	pub fn new(device: &Device, aspect_ratio: f32, height: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
+	pub fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
 		let tile_map = device.create_texture(&TextureDescriptor {
 			label: Some("Tile Map"),
 			size: Extent3d {
@@ -74,7 +74,7 @@ impl TileCache {
 			mapped_at_creation: false,
 		});
 
-		let atlas = Atlas::new(device, aspect_ratio, height, datasets)?;
+		let atlas = Atlas::new(device, datasets)?;
 
 		Ok(Self {
 			tile_map,
@@ -85,10 +85,12 @@ impl TileCache {
 		})
 	}
 
-	pub fn populate_tiles(&mut self, device: &Device, queue: &Queue, range: Range) -> UploadStatus {
+	pub fn populate_tiles(&mut self, device: &Device, queue: &Queue, height: u32, vertical_angle: f32) -> UploadStatus {
 		tracy::zone!("Tile Population");
 
-		if self.atlas.needs_clear(range) {
+		let radians_per_pixel = radians_per_pixel(height as _, vertical_angle);
+
+		if self.atlas.needs_clear() {
 			self.clear(range);
 		}
 		let meta = self.atlas.lods[range as usize];
@@ -190,7 +192,7 @@ impl TileCache {
 		ret
 	}
 
-	pub fn clear(&mut self, range: Range) {
+	pub fn clear(&mut self) {
 		for offset in self.tiles.iter_mut() {
 			*offset = self.atlas.unloaded();
 		}
@@ -205,37 +207,33 @@ impl TileCache {
 
 	pub fn hillshade(&self) -> &TextureView { &self.atlas.hillshade_view }
 
-	pub fn tile_size_for_range(&self, range: Range) -> u32 {
-		self.atlas.datasets[self.atlas.lods[range as usize]]
-			.metadata()
-			.resolution as _
+	pub fn tile_size_for_angle(&self, vertical_angle: f32) -> u32 {
+
 	}
 }
 
 struct Atlas {
 	datasets: Vec<Dataset>,
-	lods: Vec<usize>,
+	lod_densities: Vec<f32>,
 	atlas: Texture,
 	view: TextureView,
 	hillshade: Texture,
 	hillshade_view: TextureView,
 	width: u32,
 	height: u32,
-	curr_tile_res: u32,
+	curr_dataset: usize,
 	curr_offset: TileOffset,
 	collected_tiles: Vec<TileOffset>,
 }
 
 impl Atlas {
-	fn new(device: &Device, aspect_ratio: f32, height: f32, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
+	fn new(device: &Device, datasets: Vec<PathBuf>) -> Result<Self, LoadError> {
 		let datasets: Result<Vec<_>, LoadError> = datasets.into_iter().map(|dir| Dataset::load(&dir)).collect();
 		let datasets = datasets?;
-		let lods: Vec<_> = RANGE_TO_DEGREES
-			.iter()
-			.map(|&angle| Self::get_lod_for_range(angle, height, &datasets))
-			.collect();
 
-		let (width, height) = Self::get_resolution(aspect_ratio, &lods, &datasets);
+		let lod_densities = datasets.iter().map(|x| radians_per_pixel(x.metadata().resolution as _, 1.0f32.to_radians())).collect();
+
+		let (width, height) = (4096, 4096);
 		let limits = device.limits();
 		let width = width.min(limits.max_texture_dimension_2d);
 		let height = height.min(limits.max_texture_dimension_2d);
@@ -243,29 +241,38 @@ impl Atlas {
 
 		Ok(Self {
 			datasets,
-			lods,
+			lod_densities,
 			atlas,
 			view,
 			hillshade,
 			hillshade_view,
 			width,
 			height,
-			curr_tile_res: 0,
+			curr_dataset: datasets.len(),
 			curr_offset: TileOffset::default(),
 			collected_tiles: Vec::new(),
 		})
 	}
 
-	fn needs_clear(&mut self, range: Range) -> bool {
-		let res = self.datasets[self.lods[range as usize]].metadata().resolution;
-		let ret = res != self.curr_tile_res as _;
-		ret
+	fn get_dataset_for_angle(&self, radians_per_pixel: f32) -> usize {
+		let mut index = 0;
+		for (i, &density) in self.lod_densities.iter().enumerate().rev() {
+			if radians_per_pixel <= density {
+				index = i;
+				break;
+			}
+		}
+
+		index
 	}
 
-	fn clear(&mut self, range: Range) {
-		self.collected_tiles.clear();
-		self.curr_tile_res = self.datasets[self.lods[range as usize]].metadata().resolution as _;
+	fn needs_clear(&self, radians_per_pixel: f32) -> bool {
+		self.get_dataset_for_angle(radians_per_pixel) != self.curr_dataset
+	}
+
+	fn clear(&mut self) {
 		self.curr_offset = TileOffset::default();
+		self.collected_tiles.clear();
 	}
 
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
@@ -397,25 +404,4 @@ impl Atlas {
 	fn unloaded(&self) -> TileOffset { TileOffset { x: 0, y: self.height } }
 
 	fn not_found(&self) -> TileOffset { TileOffset { x: self.width, y: 0 } }
-
-	fn get_lod_for_range(vertical_angle: f32, height: f32, datasets: &[Dataset]) -> usize {
-		for (lod, dataset) in datasets.iter().enumerate().rev() {
-			let pixels_on_screen = dataset.metadata().resolution as f32 * vertical_angle;
-			if pixels_on_screen >= height {
-				return lod;
-			}
-		}
-
-		0
-	}
-
-	fn get_resolution(aspect_ratio: f32, lods: &[usize], datasets: &[Dataset]) -> (u32, u32) {
-		let mut max_resolution = 0;
-		for (&lod, &range) in lods.iter().zip(RANGES.iter()) {
-			let resolution = range.vertical_tiles_loaded() * datasets[lod].metadata().resolution as u32;
-			max_resolution = max_resolution.max(resolution);
-		}
-
-		((max_resolution as f32 * aspect_ratio) as u32, max_resolution)
-	}
 }
