@@ -26,6 +26,8 @@ var<storage, read_write> tile_status: TileStatus;
 var tile_atlas: texture_2d<u32>;
 [[group(0), binding(4)]]
 var hillshade_atlas: texture_2d<f32>;
+[[group(0), binding(5)]]
+var gather_sampler: sampler;
 
 var<private> l500: vec3<f32> = vec3<f32>(0.17, 0.31, 0.16);
 var<private> l1000: vec3<f32> = vec3<f32>(0.22, 0.36, 0.19);
@@ -77,7 +79,6 @@ fn project(uv: vec2<f32>) -> LatLon {
 }
 
 fn map_height(height: u32) -> vec3<f32> {
-    let height = ~(1u << 15u) & height;
     let feet = i32(f32(i32(height) - 500) * 3.28084);
     if (feet - 2000 > i32(uniforms.altitude)) {
         return taws_red;
@@ -150,11 +151,18 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
     } else {
         let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
         let pixel = vec2<f32>(f32(tile_offset.x), f32(tile_offset.y)) + tile_uv * f32(uniforms.tile_size);
-        let height = textureLoad(tile_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
-        let hillshade = textureLoad(hillshade_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
-        let is_water = ((height >> 15u) & 1u) == 1u;
+        let uv = pixel / vec2<f32>(atlas_dimensions);
 
-        if (is_water) {
+        let hillshade = textureSampleLevel(hillshade_atlas, gather_sampler, uv, 0.0).x;
+
+        let x = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
+        let y = textureLoad(tile_atlas, vec2<i32>(i32(ceil(pixel.x)), i32(pixel.y)), 0).x;
+        let z = textureLoad(tile_atlas, vec2<i32>(i32(pixel.x), i32(ceil(pixel.y))), 0).x;
+        let w = textureLoad(tile_atlas, vec2<i32>(ceil(pixel)), 0).x;
+        let is_water = ((x >> 15u) & 1u) + ((y >> 15u) & 1u) + ((z >> 15u) & 1u) + ((w >> 15u) & 1u);
+        let height = ((~(1u << 15u) & x) + (~(1u << 15u) & y) + (~(1u << 15u) & z) + (~(1u << 15u) & w)) / 4u;
+
+        if (is_water > 0u) {
             ret = water;
         } else {
             ret = map_height(height) * mix(0.4, 1.0, hillshade);
