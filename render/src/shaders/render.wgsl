@@ -47,7 +47,7 @@ var<private> l19000: vec3<f32> = vec3<f32>(0.51, 0.53, 0.52);
 var<private> l21000: vec3<f32> = vec3<f32>(0.51, 0.55, 0.55);
 var<private> l33000: vec3<f32> = vec3<f32>(0.56, 0.6, 0.6);
 var<private> unknown_terrain: vec3<f32> = vec3<f32>(0.41, 0.15, 0.42);
-var<private> water: vec3<f32> = vec3<f32>(0.06, 0.24, 0.41);
+var<private> water: vec3<f32> = vec3<f32>(0.01,0.09,0.31);
 var<private> taws_yellow: vec3<f32> = vec3<f32>(0.99, 0.93, 0.09);
 var<private> taws_red: vec3<f32> = vec3<f32>(0.93, 0.12, 0.14);
 
