@@ -151,20 +151,22 @@ fn main() {
 				let mut encoder = tracy::wgpu_command_encoder!(device, profiler, Default::default());
 
 				let view = renderer.texture.create_view(&Default::default());
-				renderer.renderer.render(
-					&FrameOptions {
-						width: res.0,
-						height: res.1,
-						position: LatLon { lat: pos.0, lon: pos.1 },
-						vertical_angle: range,
-						heading,
-						altitude,
-					},
-					&device,
-					&queue,
-					&view,
-					&mut encoder,
-				);
+				let opts = FrameOptions {
+					width: res.0,
+					height: res.1,
+					position: LatLon { lat: pos.0, lon: pos.1 },
+					vertical_angle: range,
+					heading,
+					altitude,
+				};
+				renderer.renderer.render(&opts, &device, &queue, &view, &mut encoder);
+
+				queue.submit([encoder.finish()]);
+				let _ = queue.on_submitted_work_done();
+				device.poll(wgpu::Maintain::Wait);
+
+				let mut encoder = tracy::wgpu_command_encoder!(device, profiler, Default::default());
+				renderer.renderer.render(&opts, &device, &queue, &view, &mut encoder);
 
 				encoder.copy_texture_to_buffer(
 					wgpu::ImageCopyTexture {
