@@ -137,11 +137,11 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
     let tile_loc = vec2<u32>(u32(lon), u32(lat));
     let index = tile_loc.y * 360u + tile_loc.x;
     tile_status.values[index] = 1u;
-    let tile_offset = textureLoad(tile_map, vec2<i32>(tile_loc), 0);
+    let tile_offset = vec2<i32>(textureLoad(tile_map, vec2<i32>(tile_loc), 0)).xy;
 
     let atlas_dimensions = textureDimensions(tile_atlas, 0);
-    let not_found = tile_offset.x == u32(atlas_dimensions.x);
-    let unloaded = tile_offset.y == u32(atlas_dimensions.y);
+    let not_found = tile_offset.x == i32(atlas_dimensions.x);
+    let unloaded = tile_offset.y == i32(atlas_dimensions.y);
 
     var ret: vec3<f32>;
     if (not_found) {
@@ -150,19 +150,40 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
         ret = vec3<f32>(0.0, 0.0, 0.0);
     } else {
         let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
-        let pixel = vec2<f32>(f32(tile_offset.x), f32(tile_offset.y)) + tile_uv * f32(uniforms.tile_size);
+        let pixel = vec2<f32>(tile_offset) + tile_uv * f32(uniforms.tile_size);
         let uv = pixel / vec2<f32>(atlas_dimensions);
 
         let hillshade = textureSampleLevel(hillshade_atlas, gather_sampler, uv, 0.0).x;
 
-        let x = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
-        let y = textureLoad(tile_atlas, vec2<i32>(i32(ceil(pixel.x)), i32(pixel.y)), 0).x;
-        let z = textureLoad(tile_atlas, vec2<i32>(i32(pixel.x), i32(ceil(pixel.y))), 0).x;
-        let w = textureLoad(tile_atlas, vec2<i32>(ceil(pixel)), 0).x;
-        let is_water = ((x >> 15u) & 1u) + ((y >> 15u) & 1u) + ((z >> 15u) & 1u) + ((w >> 15u) & 1u);
-        let height = ((~(1u << 15u) & x) + (~(1u << 15u) & y) + (~(1u << 15u) & z) + (~(1u << 15u) & w)) / 4u;
+        let min = tile_offset;
+        let max = tile_offset + vec2<i32>(i32(uniforms.tile_size) - 1);
 
-        if (is_water > 0u) {
+        let x = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
+        let y = textureLoad(tile_atlas, clamp(vec2<i32>(i32(ceil(pixel.x)), i32(pixel.y)), min, max), 0).x;
+        let z = textureLoad(tile_atlas, clamp(vec2<i32>(i32(pixel.x), i32(ceil(pixel.y))), min, max), 0).x;
+        let w = textureLoad(tile_atlas, clamp(vec2<i32>(ceil(pixel)), min, max), 0).x;
+
+        let xh = f32(~(1u << 15u) & x);
+        let yh = f32(~(1u << 15u) & y);
+        let zh = f32(~(1u << 15u) & z);
+        let wh = f32(~(1u << 15u) & w);
+
+        let pixel_offset = pixel - floor(pixel);
+
+        let xl_lerp = mix(xh, yh, pixel_offset.x);
+        let xh_lerp = mix(zh, wh, pixel_offset.x);
+        let height = u32(mix(xl_lerp, xh_lerp, pixel_offset.y));
+
+        let x = f32((x >> 15u) & 1u);
+        let y = f32((y >> 15u) & 1u);
+        let z = f32((z >> 15u) & 1u);
+        let w = f32((w >> 15u) & 1u);
+
+        let xl_lerp = mix(x, y, pixel_offset.x);
+        let xh_lerp = mix(z, w, pixel_offset.x);
+        let is_water = mix(xl_lerp, xh_lerp, pixel_offset.y);
+
+        if (is_water > 0.5) {
             ret = water;
         } else {
             ret = map_height(height) * mix(0.4, 1.0, hillshade);
