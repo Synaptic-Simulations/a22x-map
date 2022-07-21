@@ -26,8 +26,6 @@ var<storage, read_write> tile_status: TileStatus;
 var tile_atlas: texture_2d<u32>;
 [[group(0), binding(4)]]
 var hillshade_atlas: texture_2d<f32>;
-[[group(0), binding(5)]]
-var gather_sampler: sampler;
 
 var<private> l500: vec3<f32> = vec3<f32>(0.17, 0.31, 0.16);
 var<private> l1000: vec3<f32> = vec3<f32>(0.22, 0.36, 0.19);
@@ -126,14 +124,12 @@ fn map_height(height: u32) -> vec3<f32> {
     }
 }
 
-[[stage(fragment)]]
-fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
-    let rad_position = project(uv);
-    let lat = degrees(rad_position.lat) + 90.0;
-    var lon = (degrees(rad_position.lon) + 180.0) % 360.0;
-    if (lon < 0.0) {
-        lon = lon + 360.0;
-    }
+struct SampleResult {
+    height: u32;
+    hillshade: f32;
+};
+
+fn sample_globe(lat: f32, lon: f32) -> SampleResult {
     let tile_loc = vec2<u32>(u32(lon), u32(lat));
     let index = tile_loc.y * 360u + tile_loc.x;
     tile_status.values[index] = 1u;
@@ -143,51 +139,66 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
     let not_found = tile_offset.x == i32(atlas_dimensions.x);
     let unloaded = tile_offset.y == i32(atlas_dimensions.y);
 
-    var ret: vec3<f32>;
     if (not_found) {
-        ret = water;
+        return SampleResult(1u << 15u, 1.0);
     } else if (unloaded) {
-        ret = vec3<f32>(0.0, 0.0, 0.0);
+        return SampleResult(1u << 15u, 0.0);
     } else {
         let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
         let pixel = vec2<f32>(tile_offset) + tile_uv * f32(uniforms.tile_size);
-        let uv = pixel / vec2<f32>(atlas_dimensions);
 
-        let hillshade = textureSampleLevel(hillshade_atlas, gather_sampler, uv, 0.0).x;
+        let height = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
+        let hillshade = textureLoad(hillshade_atlas, vec2<i32>(pixel), 0).x;
+        return SampleResult(height, mix(0.4, 1.0, hillshade));
+    }
+}
 
-        let min = tile_offset;
-        let max = tile_offset + vec2<i32>(i32(uniforms.tile_size) - 1);
+[[stage(fragment)]]
+fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
+    let rad_position = project(uv);
+    let lat = degrees(rad_position.lat) + 90.0;
+    var lon = (degrees(rad_position.lon) + 180.0) % 360.0;
+    if (lon < 0.0) {
+        lon = lon + 360.0;
+    }
 
-        let x = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
-        let y = textureLoad(tile_atlas, clamp(vec2<i32>(i32(ceil(pixel.x)), i32(pixel.y)), min, max), 0).x;
-        let z = textureLoad(tile_atlas, clamp(vec2<i32>(i32(pixel.x), i32(ceil(pixel.y))), min, max), 0).x;
-        let w = textureLoad(tile_atlas, clamp(vec2<i32>(ceil(pixel)), min, max), 0).x;
+    let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
+    let pixel = tile_uv * f32(uniforms.tile_size);
+    let pixel_offset = pixel - floor(pixel);
 
-        let xh = f32(~(1u << 15u) & x);
-        let yh = f32(~(1u << 15u) & y);
-        let zh = f32(~(1u << 15u) & z);
-        let wh = f32(~(1u << 15u) & w);
+    let delta = 1.0 / f32(uniforms.tile_size);
+    let x = sample_globe(lat, lon);
+    let y = sample_globe(lat, lon + delta);
+    let z = sample_globe(lat - delta, lon);
+    let w = sample_globe(lat - delta, lon + delta);
 
-        let pixel_offset = pixel - floor(pixel);
+    let xh = f32(~(1u << 15u) & x.height);
+    let yh = f32(~(1u << 15u) & y.height);
+    let zh = f32(~(1u << 15u) & z.height);
+    let wh = f32(~(1u << 15u) & w.height);
 
-        let xl_lerp = mix(xh, yh, pixel_offset.x);
-        let xh_lerp = mix(zh, wh, pixel_offset.x);
-        let height = u32(mix(xl_lerp, xh_lerp, pixel_offset.y));
+    let xl_lerp = mix(xh, yh, pixel_offset.x);
+    let xh_lerp = mix(zh, wh, pixel_offset.x);
+    let height = u32(mix(xl_lerp, xh_lerp, pixel_offset.y));
 
-        let x = f32((x >> 15u) & 1u);
-        let y = f32((y >> 15u) & 1u);
-        let z = f32((z >> 15u) & 1u);
-        let w = f32((w >> 15u) & 1u);
+    let xw = f32((x.height >> 15u) & 1u);
+    let yw = f32((y.height >> 15u) & 1u);
+    let zw = f32((z.height >> 15u) & 1u);
+    let ww = f32((w.height >> 15u) & 1u);
 
-        let xl_lerp = mix(x, y, pixel_offset.x);
-        let xh_lerp = mix(z, w, pixel_offset.x);
-        let is_water = mix(xl_lerp, xh_lerp, pixel_offset.y);
+    let xl_lerp = mix(xw, yw, pixel_offset.x);
+    let xh_lerp = mix(zw, ww, pixel_offset.x);
+    let is_water = mix(xl_lerp, xh_lerp, pixel_offset.y);
 
-        if (is_water > 0.5) {
-            ret = water;
-        } else {
-            ret = map_height(height) * mix(0.4, 1.0, hillshade);
-        }
+    let xl_lerp = mix(x.hillshade, y.hillshade, pixel_offset.x);
+    let xh_lerp = mix(z.hillshade, w.hillshade, pixel_offset.x);
+    let hillshade = mix(xl_lerp, xh_lerp, pixel_offset.y);
+
+    var ret: vec3<f32>;
+    if (is_water > 0.5) {
+        ret = water;
+    } else {
+        ret = map_height(height) * hillshade;
     }
     return vec4<f32>(pow(ret, vec3<f32>(2.2)), 1.0);
 }

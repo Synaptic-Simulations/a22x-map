@@ -4,7 +4,6 @@ use geo::LoadError;
 use tracy::wgpu::EncoderProfiler;
 use wgpu::{
 	include_wgsl,
-	AddressMode,
 	BindGroup,
 	BindGroupDescriptor,
 	BindGroupEntry,
@@ -20,7 +19,6 @@ use wgpu::{
 	Color,
 	ColorTargetState,
 	Device,
-	FilterMode,
 	FragmentState,
 	LoadOp,
 	Operations,
@@ -30,8 +28,6 @@ use wgpu::{
 	RenderPassDescriptor,
 	RenderPipeline,
 	RenderPipelineDescriptor,
-	SamplerBindingType,
-	SamplerDescriptor,
 	ShaderStages,
 	TextureFormat,
 	TextureSampleType,
@@ -161,12 +157,6 @@ impl Renderer {
 					},
 					count: None,
 				},
-				BindGroupLayoutEntry {
-					binding: 5,
-					visibility: ShaderStages::FRAGMENT,
-					ty: BindingType::Sampler(SamplerBindingType::Filtering),
-					count: None,
-				},
 			],
 		});
 
@@ -272,23 +262,6 @@ impl Renderer {
 				BindGroupEntry {
 					binding: 4,
 					resource: BindingResource::TextureView(&cache.hillshade()),
-				},
-				BindGroupEntry {
-					binding: 5,
-					resource: BindingResource::Sampler(&device.create_sampler(&SamplerDescriptor {
-						label: Some("Gather Sampler"),
-						address_mode_u: AddressMode::Repeat,
-						address_mode_v: AddressMode::Repeat,
-						address_mode_w: AddressMode::Repeat,
-						mag_filter: FilterMode::Linear,
-						min_filter: FilterMode::Linear,
-						mipmap_filter: FilterMode::Linear,
-						lod_min_clamp: 0.0,
-						lod_max_clamp: 1.0,
-						compare: None,
-						anisotropy_clamp: None,
-						border_color: None,
-					})),
 				},
 			],
 		})
