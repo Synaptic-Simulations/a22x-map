@@ -2,7 +2,11 @@ use std::{cell::RefCell, path::PathBuf};
 
 use clap::Args;
 use geo::{Dataset, TileMetadata, FORMAT_VERSION};
-use resize::{Pixel::Gray16, Resizer, Type};
+use resize::{
+	Pixel::{Gray16, Gray8},
+	Resizer,
+	Type,
+};
 use rgb::FromSlice;
 use thread_local::ThreadLocal;
 
@@ -18,8 +22,6 @@ pub struct Edit {
 	resolution: u16,
 	#[clap(short = 's', long = "hres", default_value_t = 50)]
 	height_resolution: u16,
-	#[clap(short = 'd', long = "delta")]
-	delta_compressed: bool,
 }
 
 pub fn edit(edit: Edit) {
@@ -40,12 +42,13 @@ pub fn edit(edit: Edit) {
 
 	let needs_resize = metadata.resolution != source_metadata.resolution;
 
-	let resizer = ThreadLocal::new();
+	let u16_resize = ThreadLocal::new();
+	let u8_resize = ThreadLocal::new();
 
 	for_tile_in_output(&edit.output, metadata, |lat, lon, builder| {
-		if let Some(source) = source.get_tile(lat, lon).transpose()? {
+		if let Some((data, water, hillshade)) = source.get_full_tile(lat, lon).transpose()? {
 			let data = if needs_resize {
-				let mut resizer = resizer
+				let mut u16_resize = u16_resize
 					.get_or(|| {
 						RefCell::new(
 							Resizer::new(
@@ -60,69 +63,42 @@ pub fn edit(edit: Edit) {
 						)
 					})
 					.borrow_mut();
-
-				let mut count = 0;
-				let water_mask: Vec<_> = source
-					.iter()
-					.copied()
-					.map(|x| {
-						if x == -500 {
-							count += 1;
-							1
-						} else {
-							0
-						}
+				let mut u8_resize = u8_resize
+					.get_or(|| {
+						RefCell::new(
+							Resizer::new(
+								source_metadata.resolution as _,
+								source_metadata.resolution as _,
+								metadata.resolution as _,
+								metadata.resolution as _,
+								Gray8,
+								Type::Lanczos3,
+							)
+							.unwrap(),
+						)
 					})
-					.collect();
+					.borrow_mut();
 
-				if count != source.len() {
-					let mut count = 0;
-					let avg = source
-						.iter()
-						.copied()
-						.filter_map(|x| {
-							(x != -500).then(|| {
-								count += 1;
-								x as i64
-							})
-						})
-						.sum::<i64>() / count + 500;
-					let source: Vec<_> = source
-						.into_iter()
-						.map(|x| if x == -500 { avg as i16 } else { x + 500 } as u16)
-						.collect();
-					let res = metadata.resolution as usize * metadata.resolution as usize;
-					let mut water = vec![0; res];
-					let mut output = vec![0; res];
+				let res = metadata.resolution as usize;
+				let mut data_out = vec![0; res * res];
+				let mut water_out = vec![0; res * res];
+				let mut hillshade_out = vec![0; res * res];
 
-					{
-						tracy::zone!("Downsample");
-						resizer.resize(water_mask.as_gray(), water.as_gray_mut()).unwrap();
-						resizer.resize(source.as_gray(), output.as_gray_mut()).unwrap();
-					}
+				let _ = u16_resize.resize(data.as_gray(), data_out.as_gray_mut());
+				let _ = u8_resize.resize(water.as_gray(), water_out.as_gray_mut());
+				let _ = u8_resize.resize(hillshade.as_gray(), hillshade_out.as_gray_mut());
 
-					if !water.iter().copied().all(|x| x == 1) {
-						let output = output
-							.into_iter()
-							.zip(water.into_iter())
-							.map(|(height, water)| if water == 1 { -500 } else { height as i16 - 500 })
-							.collect();
-						Some(output)
-					} else {
-						None
-					}
-				} else {
+				if water_out.iter().all(|&x| x == 1) {
 					None
+				} else {
+					Some((data_out, water_out, hillshade_out))
 				}
 			} else {
-				if !source.iter().copied().all(|x| x == -500) {
-					Some(source)
-				} else {
-					None
-				}
+				Some((data, water, hillshade))
 			};
+
 			if let Some(data) = data {
-				builder.add_tile(lat, lon, data)?;
+				builder.add_tile(lat, lon, data.0, data.1, data.2)?;
 			}
 		}
 

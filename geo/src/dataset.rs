@@ -63,7 +63,20 @@ impl Dataset {
 
 	pub fn tile_count(&self) -> usize { self.tile_map.iter().filter(|&&x| x != 0).count() }
 
-	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<Vec<u16>, std::io::Error>> {
+	pub fn get_tile(&self, lat: i16, lon: i16) -> Option<Result<(Vec<u16>, Vec<u8>), std::io::Error>> {
+		Some(match self.get_full_tile(lat, lon)? {
+			Ok((mut data, water, hillshade)) => {
+				for (h, w) in data.iter_mut().zip(water) {
+					*h |= (w as u16) << 15;
+				}
+
+				Ok((data, hillshade))
+			},
+			Err(e) => Err(e),
+		})
+	}
+
+	pub fn get_full_tile(&self, lat: i16, lon: i16) -> Option<Result<(Vec<u16>, Vec<u8>, Vec<u8>), std::io::Error>> {
 		tracy::zone!("Get Tile");
 
 		let index = map_lat_lon_to_index(lat, lon);
@@ -82,7 +95,7 @@ impl Dataset {
 				Err(e) => return Some(Err(e)),
 			}
 		};
-		let mut data: Vec<_> = {
+		let data: Vec<_> = {
 			tracy::zone!("Unmap height");
 			data.data
 				.into_owned()
@@ -90,35 +103,46 @@ impl Dataset {
 				.map(|x| x * self.metadata.height_resolution)
 				.collect()
 		};
-		let water = unsafe {
+		let (water, rest) = {
 			tracy::zone!("Decompress water");
 
-			let frame = &frame[len..];
-			let frame_size = u32::from_le_bytes(frame[4..8].try_into().unwrap()) + 8;
-			let frame = &frame[..frame_size as usize];
-			let mut decompressed = vec![0; res as usize * res as usize];
+			match Self::decompress_u8_webp(&frame[len..], res, res) {
+				Ok(x) => x,
+				Err(e) => return Some(Err(e)),
+			}
+		};
+		let (hillshade, _) = {
+			tracy::zone!("Decompress hillshade");
+			match Self::decompress_u8_webp(rest, res, res) {
+				Ok(x) => x,
+				Err(e) => return Some(Err(e)),
+			}
+		};
+
+		Some(Ok((data, water, hillshade)))
+	}
+
+	fn decompress_u8_webp(data: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, &[u8]), std::io::Error> {
+		unsafe {
+			let frame_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) + 8;
+			let frame = &data[..frame_size as usize];
+			let mut decompressed = vec![0; width as usize * height as usize];
 			if WebPDecodeRGBAInto(
 				frame.as_ptr(),
 				frame.len(),
 				decompressed.as_mut_ptr(),
 				decompressed.len(),
-				res as i32 * 2,
+				width as i32 * 2,
 			)
 			.is_null()
 			{
-				return Some(Err(std::io::Error::new(
+				return Err(std::io::Error::new(
 					std::io::ErrorKind::Other,
 					"WebPDecodeRGBAInto failed",
-				)));
+				));
 			}
 
-			decompressed
-		};
-
-		for (h, w) in data.iter_mut().zip(water) {
-			*h |= (w as u16) << 15;
+			Ok((decompressed, &data[frame_size as usize..]))
 		}
-
-		Some(Ok(data))
 	}
 }

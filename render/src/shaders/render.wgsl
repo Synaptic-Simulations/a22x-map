@@ -77,55 +77,50 @@ fn project(uv: vec2<f32>) -> LatLon {
 }
 
 fn map_height(height: u32) -> vec3<f32> {
-    let is_water = ((height >> 15u) & 1u) == 1u;
     let height = ~(1u << 15u) & height;
-    if (is_water) {
-        return water;
+    let feet = i32(f32(i32(height) - 500) * 3.28084);
+    if (feet - 2000 > i32(uniforms.altitude)) {
+        return taws_red;
+    } else if (feet > i32(uniforms.altitude - 500.0)) {
+        return taws_yellow;
+    } else if (feet < 500) {
+        return l500;
     } else {
-        let feet = i32(f32(i32(height) - 500) * 3.28084);
-        if (feet - 2000 > i32(uniforms.altitude)) {
-            return taws_red;
-        } else if (feet > i32(uniforms.altitude - 500.0)) {
-            return taws_yellow;
-        } else if (feet < 500) {
-            return l500;
-        } else {
-            switch (feet / 1000) {
-                case 0: { return l1000; }
-                case 1: { return l2000; }
-                case 2: { return l3000; }
-                case 3: { return l4000; }
-                case 4: { return l5000; }
-                case 5: { return l6000; }
-                case 6: { return l7000; }
-                case 7: { return l8000; }
-                case 8: { return l9000; }
-                case 9: { return l10000; }
-                case 10: { return l11000; }
-                case 11: { return l12000; }
-                case 12: { return l13000; }
-                case 13: { return l15000; }
-                case 14: { return l15000; }
-                case 15: { return l17000; }
-                case 16: { return l17000; }
-                case 17: { return l19000; }
-                case 18: { return l19000; }
-                case 19: { return l21000; }
-                case 20: { return l21000; }
-                case 21: { return l33000; }
-                case 22: { return l33000; }
-                case 23: { return l33000; }
-                case 24: { return l33000; }
-                case 25: { return l33000; }
-                case 26: { return l33000; }
-                case 27: { return l33000; }
-                case 28: { return l33000; }
-                case 29: { return l33000; }
-                case 30: { return l33000; }
-                case 31: { return l33000; }
-                case 32: { return l33000; }
-                default: { return unknown_terrain; }
-            }
+        switch (feet / 1000) {
+            case 0: { return l1000; }
+            case 1: { return l2000; }
+            case 2: { return l3000; }
+            case 3: { return l4000; }
+            case 4: { return l5000; }
+            case 5: { return l6000; }
+            case 6: { return l7000; }
+            case 7: { return l8000; }
+            case 8: { return l9000; }
+            case 9: { return l10000; }
+            case 10: { return l11000; }
+            case 11: { return l12000; }
+            case 12: { return l13000; }
+            case 13: { return l15000; }
+            case 14: { return l15000; }
+            case 15: { return l17000; }
+            case 16: { return l17000; }
+            case 17: { return l19000; }
+            case 18: { return l19000; }
+            case 19: { return l21000; }
+            case 20: { return l21000; }
+            case 21: { return l33000; }
+            case 22: { return l33000; }
+            case 23: { return l33000; }
+            case 24: { return l33000; }
+            case 25: { return l33000; }
+            case 26: { return l33000; }
+            case 27: { return l33000; }
+            case 28: { return l33000; }
+            case 29: { return l33000; }
+            case 30: { return l33000; }
+            case 31: { return l33000; }
+            case 32: { return l33000; }
+            default: { return unknown_terrain; }
         }
     }
 }
@@ -156,7 +151,14 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
         let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
         let pixel = vec2<f32>(f32(tile_offset.x), f32(tile_offset.y)) + tile_uv * f32(uniforms.tile_size);
         let height = textureLoad(tile_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
-        ret = map_height(height);
+        let hillshade = textureLoad(hillshade_atlas, vec2<i32>(i32(pixel.x), i32(pixel.y)), 0).x;
+        let is_water = ((height >> 15u) & 1u) == 1u;
+
+        if (is_water) {
+            ret = water;
+        } else {
+            ret = map_height(height) * mix(0.4, 1.0, hillshade);
+        }
     }
     return vec4<f32>(pow(ret, vec3<f32>(2.2)), 1.0);
 }

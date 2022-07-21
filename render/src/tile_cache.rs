@@ -141,11 +141,11 @@ impl TileCache {
 						}
 					};
 
-					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(queue, &tile) {
+					self.tiles[index] = if let Some(offset) = self.atlas.upload_tile(queue, &tile.0, &tile.1) {
 						offset
 					} else if self.atlas.collect_tiles(used, &mut self.tiles, index) {
 						self.atlas
-							.upload_tile(queue, &tile)
+							.upload_tile(queue, &tile.0, &tile.1)
 							.expect("Tile GC returned None when it had to be Some")
 					} else {
 						if self.atlas.recreate_atlas(device) {
@@ -278,7 +278,7 @@ impl Atlas {
 
 	fn return_tile(&mut self, tile: TileOffset) { self.collected_tiles.push(tile); }
 
-	fn upload_tile(&mut self, queue: &Queue, tile: &[u16]) -> Option<TileOffset> {
+	fn upload_tile(&mut self, queue: &Queue, tile: &[u16], hillshade: &[u8]) -> Option<TileOffset> {
 		tracy::zone!("Tile Upload");
 
 		let res = self.datasets[self.curr_dataset].metadata().resolution as u32;
@@ -309,6 +309,29 @@ impl Atlas {
 			ImageDataLayout {
 				offset: 0,
 				bytes_per_row: Some(NonZeroU32::new(2 * res).unwrap()),
+				rows_per_image: Some(NonZeroU32::new(res).unwrap()),
+			},
+			Extent3d {
+				width: res,
+				height: res,
+				depth_or_array_layers: 1,
+			},
+		);
+		queue.write_texture(
+			ImageCopyTexture {
+				texture: &self.hillshade,
+				mip_level: 0,
+				origin: Origin3d {
+					x: ret.x as _,
+					y: ret.y as _,
+					z: 0,
+				},
+				aspect: TextureAspect::All,
+			},
+			unsafe { std::slice::from_raw_parts(hillshade.as_ptr() as _, hillshade.len()) },
+			ImageDataLayout {
+				offset: 0,
+				bytes_per_row: Some(NonZeroU32::new(res).unwrap()),
 				rows_per_image: Some(NonZeroU32::new(res).unwrap()),
 			},
 			Extent3d {
@@ -392,7 +415,6 @@ impl Atlas {
 		let hillshade = device.create_texture(&TextureDescriptor {
 			label: Some("Hillshade"),
 			format: TextureFormat::R8Unorm,
-			usage: TextureUsages::TEXTURE_BINDING | TextureUsages::RENDER_ATTACHMENT,
 			..descriptor
 		});
 		let hillshade_view = hillshade.create_view(&TextureViewDescriptor {

@@ -65,67 +65,25 @@ impl DatasetBuilder {
 		self.locked.read().unwrap().tile_map[index] != 0
 	}
 
-	/// data: `height + 500`s in meters with the 16th bit set if pixel is water.
-	pub fn add_tile(&self, lat: i16, lon: i16, data: Vec<u16>) -> Result<(), std::io::Error> {
-		let water: Vec<_> = {
-			tracy::zone!("Water mask");
-			data.iter()
-				.map(|&x| {
-					let x = x as u16 >> 15;
-					x as u8 & 1
-				})
-				.collect()
+	/// data: `height + 500`s in meters.
+	pub fn add_tile(
+		&self, lat: i16, lon: i16, data: Vec<u16>, water: Vec<u8>, hillshade: Vec<u8>,
+	) -> Result<(), std::io::Error> {
+		let water = {
+			tracy::zone!("Compress water");
+			Self::compress_u8_webp(&water, self.metadata.resolution as _, self.metadata.resolution as _)?
 		};
 
-		let water = unsafe {
-			tracy::zone!("Compress water");
-
-			let mut temp = Vec::new();
-
-			let mut config = std::mem::zeroed();
-			WebPInitConfig(&mut config);
-			config.lossless = 1;
-			config.quality = 100.0;
-			config.method = 3;
-			config.image_hint = WEBP_HINT_GRAPH;
-			config.exact = 1;
-
-			let mut picture = std::mem::zeroed();
-			WebPPictureInit(&mut picture);
-			picture.use_argb = 1;
-			picture.writer = Some(write);
-			picture.custom_ptr = &mut temp as *mut _ as _;
-			let res = self.metadata.resolution as i32;
-			picture.width = res / 2;
-			picture.height = res / 2;
-
-			WebPPictureImportRGBA(&mut picture, water.as_ptr() as _, res * 2);
-
-			WebPEncode(&config, &mut picture);
-
-			if picture.error_code as i32 != 0 {
-				return Err(std::io::Error::new(
-					std::io::ErrorKind::Other,
-					format!("WebPEncode failed: {}", picture.error_code as i32),
-				));
-			}
-
-			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
-				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
-				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
-
-				1
-			}
-
-			temp
+		let hillshade = {
+			tracy::zone!("Compress hillshade");
+			Self::compress_u8_webp(&hillshade, self.metadata.resolution as _, self.metadata.resolution as _)?
 		};
 
 		let data: Vec<_> = {
 			tracy::zone!("Map height");
 			data.into_iter()
 				.map(|x| {
-					let mask = !(1 << 15);
-					let positive = (x & mask) as f32;
+					let positive = x as f32;
 					let mapped = positive / self.metadata.height_resolution as f32;
 					mapped.round() as u16
 				})
@@ -155,7 +113,10 @@ impl DatasetBuilder {
 		let offset = locked.file.seek(SeekFrom::End(0))?;
 		locked.tile_map[index] = offset;
 		locked.file.write_all(&data)?;
-		locked.file.write_all(&water)
+		locked.file.write_all(&water)?;
+		locked.file.write_all(&hillshade)?;
+
+		Ok(())
 	}
 
 	pub fn flush(&self) -> Result<(), std::io::Error> {
@@ -185,5 +146,47 @@ impl DatasetBuilder {
 		file.write_all(unsafe { std::slice::from_raw_parts(tile_map.as_ptr() as _, tile_map.len() * 8) })?;
 
 		Ok(())
+	}
+
+	fn compress_u8_webp(data: &[u8], width: u32, height: u32) -> Result<Vec<u8>, std::io::Error> {
+		unsafe {
+			let mut temp = Vec::new();
+
+			let mut config = std::mem::zeroed();
+			WebPInitConfig(&mut config);
+			config.lossless = 1;
+			config.quality = 100.0;
+			config.method = 3;
+			config.image_hint = WEBP_HINT_GRAPH;
+			config.exact = 1;
+
+			let mut picture = std::mem::zeroed();
+			WebPPictureInit(&mut picture);
+			picture.use_argb = 1;
+			picture.writer = Some(write);
+			picture.custom_ptr = &mut temp as *mut _ as _;
+			picture.width = width as i32 / 2;
+			picture.height = height as i32 / 2;
+
+			WebPPictureImportRGBA(&mut picture, data.as_ptr() as _, width as i32 * 2);
+
+			WebPEncode(&config, &mut picture);
+
+			if picture.error_code as i32 != 0 {
+				return Err(std::io::Error::new(
+					std::io::ErrorKind::Other,
+					format!("WebPEncode failed: {}", picture.error_code as i32),
+				));
+			}
+
+			unsafe extern "C" fn write(data: *const u8, data_size: usize, picture: *const WebPPicture) -> i32 {
+				let vec = &mut *((*picture).custom_ptr as *mut Vec<u8>);
+				vec.extend_from_slice(std::slice::from_raw_parts(data, data_size));
+
+				1
+			}
+
+			Ok(temp)
+		}
 	}
 }
