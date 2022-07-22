@@ -19,6 +19,7 @@ use wgpu::{
 	Color,
 	ColorTargetState,
 	Device,
+	Extent3d,
 	FragmentState,
 	LoadOp,
 	Operations,
@@ -29,9 +30,13 @@ use wgpu::{
 	RenderPipeline,
 	RenderPipelineDescriptor,
 	ShaderStages,
+	TextureDescriptor,
+	TextureDimension,
 	TextureFormat,
 	TextureSampleType,
+	TextureUsages,
 	TextureView,
+	TextureViewDescriptor,
 	TextureViewDimension,
 	VertexState,
 };
@@ -84,9 +89,14 @@ impl Default for FrameOptions {
 pub struct Renderer {
 	cache: TileCache,
 	cbuffer: Buffer,
-	layout: BindGroupLayout,
-	pipeline: RenderPipeline,
-	group: BindGroup,
+	height_layout: BindGroupLayout,
+	height_pipeline: RenderPipeline,
+	height_group: BindGroup,
+	output_layout: BindGroupLayout,
+	output_pipeline: RenderPipeline,
+	last_size: (u32, u32),
+	height_texture: Option<TextureView>,
+	output_group: Option<BindGroup>,
 }
 
 impl Renderer {
@@ -104,8 +114,14 @@ impl Renderer {
 			mapped_at_creation: false,
 		});
 
-		let layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
-			label: Some("Map Render Bind Group"),
+		let vertex = VertexState {
+			module: &device.create_shader_module(&include_wgsl!("shaders/fullscreen.wgsl")),
+			entry_point: "main",
+			buffers: &[],
+		};
+
+		let height_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+			label: Some("Height Bind Group"),
 			entries: &[
 				BindGroupLayoutEntry {
 					binding: 0,
@@ -147,11 +163,48 @@ impl Renderer {
 					},
 					count: None,
 				},
+			],
+		});
+
+		let height_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+			label: Some("Height Pipeline"),
+			layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
+				label: Some("Height Pipeline Layout"),
+				bind_group_layouts: &[&height_layout],
+				push_constant_ranges: &[],
+			})),
+			vertex: vertex.clone(),
+			primitive: Default::default(),
+			depth_stencil: None,
+			multisample: Default::default(),
+			fragment: Some(FragmentState {
+				module: &device.create_shader_module(&include_wgsl!("shaders/height.wgsl")),
+				entry_point: "main",
+				targets: &[ColorTargetState::from(TextureFormat::R16Uint)],
+			}),
+			multiview: None,
+		});
+
+		let height_group = Self::make_height_bind_group(device, &height_layout, &cbuffer, &cache);
+
+		let output_layout = device.create_bind_group_layout(&BindGroupLayoutDescriptor {
+			label: Some("Output Bind Group"),
+			entries: &[
 				BindGroupLayoutEntry {
-					binding: 4,
+					binding: 0,
+					visibility: ShaderStages::FRAGMENT,
+					ty: BindingType::Buffer {
+						ty: BufferBindingType::Uniform,
+						has_dynamic_offset: false,
+						min_binding_size: None,
+					},
+					count: None,
+				},
+				BindGroupLayoutEntry {
+					binding: 1,
 					visibility: ShaderStages::FRAGMENT,
 					ty: BindingType::Texture {
-						sample_type: TextureSampleType::Float { filterable: true },
+						sample_type: TextureSampleType::Uint,
 						view_dimension: TextureViewDimension::D2,
 						multisampled: false,
 					},
@@ -160,37 +213,36 @@ impl Renderer {
 			],
 		});
 
-		let pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
-			label: Some("Map Render Pipeline"),
+		let output_pipeline = device.create_render_pipeline(&RenderPipelineDescriptor {
+			label: Some("Output Pipeline"),
 			layout: Some(&device.create_pipeline_layout(&PipelineLayoutDescriptor {
-				label: Some("Map Render Pipeline Layout"),
-				bind_group_layouts: &[&layout],
+				label: Some("Output Pipeline Layout"),
+				bind_group_layouts: &[&output_layout],
 				push_constant_ranges: &[],
 			})),
-			vertex: VertexState {
-				module: &device.create_shader_module(&include_wgsl!("shaders/fullscreen.wgsl")),
-				entry_point: "main",
-				buffers: &[],
-			},
+			vertex: vertex.clone(),
 			primitive: Default::default(),
 			depth_stencil: None,
 			multisample: Default::default(),
 			fragment: Some(FragmentState {
-				module: &device.create_shader_module(&include_wgsl!("shaders/render.wgsl")),
+				module: &device.create_shader_module(&include_wgsl!("shaders/output.wgsl")),
 				entry_point: "main",
 				targets: &[ColorTargetState::from(options.output_format)],
 			}),
 			multiview: None,
 		});
 
-		let group = Self::make_bind_group(device, &layout, &cbuffer, &cache);
-
 		Ok(Self {
 			cache,
 			cbuffer,
-			pipeline,
-			group,
-			layout,
+			height_pipeline,
+			height_group,
+			height_layout,
+			output_layout,
+			output_pipeline,
+			last_size: (0, 0),
+			height_texture: None,
+			output_group: None,
 		})
 	}
 
@@ -204,7 +256,7 @@ impl Renderer {
 			.cache
 			.populate_tiles(device, queue, options.height, options.vertical_angle)
 		{
-			self.group = Self::make_bind_group(device, &self.layout, &self.cbuffer, &self.cache);
+			self.height_group = Self::make_height_bind_group(device, &self.height_layout, &self.cbuffer, &self.cache);
 		}
 
 		{
@@ -214,33 +266,71 @@ impl Renderer {
 			queue.write_buffer(&self.cbuffer, 0, &Self::get_cbuffer_data(&self.cache, options));
 		}
 
+		if self.last_size.0 != options.width || self.last_size.1 != options.height {
+			self.last_size = (options.width, options.height);
+			let (texture, group) = Self::make_height_texture(
+				device,
+				&self.output_layout,
+				&self.cbuffer,
+				options.width,
+				options.height,
+			);
+			self.height_texture = Some(texture);
+			self.output_group = Some(group);
+		}
+
 		{
 			tracy::zone!("Render");
 
-			let mut pass = tracy::wgpu_render_pass!(
-				encoder,
-				RenderPassDescriptor {
-					label: Some("Map Render Pass"),
-					color_attachments: &[RenderPassColorAttachment {
-						view,
-						resolve_target: None,
-						ops: Operations {
-							load: LoadOp::Clear(Color::BLACK),
-							store: true,
-						},
-					}],
-					depth_stencil_attachment: None,
-				}
-			);
-			pass.set_pipeline(&self.pipeline);
-			pass.set_bind_group(0, &self.group, &[]);
-			pass.draw(0..3, 0..1);
+			{
+				let mut pass = tracy::wgpu_render_pass!(
+					encoder,
+					RenderPassDescriptor {
+						label: Some("Heightmap Pass"),
+						color_attachments: &[RenderPassColorAttachment {
+							view: self.height_texture.as_ref().unwrap(),
+							resolve_target: None,
+							ops: Operations {
+								load: LoadOp::Clear(Color::BLACK),
+								store: true,
+							},
+						}],
+						depth_stencil_attachment: None,
+					}
+				);
+				pass.set_pipeline(&self.height_pipeline);
+				pass.set_bind_group(0, &self.height_group, &[]);
+				pass.draw(0..3, 0..1);
+			}
+
+			{
+				let mut pass = tracy::wgpu_render_pass!(
+					encoder,
+					RenderPassDescriptor {
+						label: Some("Output Pass"),
+						color_attachments: &[RenderPassColorAttachment {
+							view,
+							resolve_target: None,
+							ops: Operations {
+								load: LoadOp::Clear(Color::BLACK),
+								store: true,
+							},
+						}],
+						depth_stencil_attachment: None,
+					}
+				);
+				pass.set_pipeline(&self.output_pipeline);
+				pass.set_bind_group(0, self.output_group.as_ref().unwrap(), &[]);
+				pass.draw(0..3, 0..1);
+			}
 		}
 	}
 
-	fn make_bind_group(device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache) -> BindGroup {
+	fn make_height_bind_group(
+		device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, cache: &TileCache,
+	) -> BindGroup {
 		device.create_bind_group(&BindGroupDescriptor {
-			label: Some("Map Render Bind Group"),
+			label: Some("Height Bind Group"),
 			layout,
 			entries: &[
 				BindGroupEntry {
@@ -259,12 +349,48 @@ impl Renderer {
 					binding: 3,
 					resource: BindingResource::TextureView(&cache.atlas()),
 				},
-				BindGroupEntry {
-					binding: 4,
-					resource: BindingResource::TextureView(&cache.hillshade()),
-				},
 			],
 		})
+	}
+
+	fn make_height_texture(
+		device: &Device, layout: &BindGroupLayout, cbuffer: &Buffer, width: u32, height: u32,
+	) -> (TextureView, BindGroup) {
+		let texture = device
+			.create_texture(&TextureDescriptor {
+				label: Some("Height Texture"),
+				size: Extent3d {
+					width,
+					height,
+					depth_or_array_layers: 1,
+				},
+				mip_level_count: 1,
+				sample_count: 1,
+				dimension: TextureDimension::D2,
+				format: TextureFormat::R16Uint,
+				usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+			})
+			.create_view(&TextureViewDescriptor {
+				label: Some("Height Texture View"),
+				..Default::default()
+			});
+
+		let group = device.create_bind_group(&BindGroupDescriptor {
+			label: Some("Output Bind Group"),
+			layout,
+			entries: &[
+				BindGroupEntry {
+					binding: 0,
+					resource: cbuffer.as_entire_binding(),
+				},
+				BindGroupEntry {
+					binding: 1,
+					resource: BindingResource::TextureView(&texture),
+				},
+			],
+		});
+
+		(texture, group)
 	}
 
 	fn get_cbuffer_data(cache: &TileCache, options: &FrameOptions) -> [u8; Self::CBUFFER_SIZE as _] {

@@ -204,8 +204,6 @@ impl TileCache {
 
 	pub fn atlas(&self) -> &TextureView { &self.atlas.view }
 
-	pub fn hillshade(&self) -> &TextureView { &self.atlas.hillshade_view }
-
 	pub fn tile_size(&self) -> u32 { self.atlas.datasets[self.atlas.curr_dataset].metadata().resolution as _ }
 }
 
@@ -214,8 +212,6 @@ struct Atlas {
 	lod_densities: Vec<f32>,
 	atlas: Texture,
 	view: TextureView,
-	hillshade: Texture,
-	hillshade_view: TextureView,
 	width: u32,
 	height: u32,
 	curr_dataset: usize,
@@ -237,7 +233,7 @@ impl Atlas {
 		let limits = device.limits();
 		let width = width.min(limits.max_texture_dimension_2d);
 		let height = height.min(limits.max_texture_dimension_2d);
-		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
+		let (atlas, view) = Self::make_atlas(device, width, height);
 
 		Ok(Self {
 			curr_dataset: datasets.len(),
@@ -245,8 +241,6 @@ impl Atlas {
 			lod_densities,
 			atlas,
 			view,
-			hillshade,
-			hillshade_view,
 			width,
 			height,
 			curr_offset: TileOffset::default(),
@@ -317,29 +311,6 @@ impl Atlas {
 				depth_or_array_layers: 1,
 			},
 		);
-		queue.write_texture(
-			ImageCopyTexture {
-				texture: &self.hillshade,
-				mip_level: 0,
-				origin: Origin3d {
-					x: ret.x as _,
-					y: ret.y as _,
-					z: 0,
-				},
-				aspect: TextureAspect::All,
-			},
-			unsafe { std::slice::from_raw_parts(hillshade.as_ptr() as _, hillshade.len()) },
-			ImageDataLayout {
-				offset: 0,
-				bytes_per_row: Some(NonZeroU32::new(res).unwrap()),
-				rows_per_image: Some(NonZeroU32::new(res).unwrap()),
-			},
-			Extent3d {
-				width: res,
-				height: res,
-				depth_or_array_layers: 1,
-			},
-		);
 
 		self.curr_offset.x += res;
 		if self.curr_offset.x + res >= self.width {
@@ -379,19 +350,17 @@ impl Atlas {
 
 		let width = (self.width * 2).min(limits.max_texture_dimension_2d);
 		let height = (self.height * 2).min(limits.max_texture_dimension_2d);
-		let (atlas, view, hillshade, hillshade_view) = Self::make_atlas(device, width, height);
+		let (atlas, view) = Self::make_atlas(device, width, height);
 
 		self.atlas = atlas;
 		self.view = view;
-		self.hillshade = hillshade;
-		self.hillshade_view = hillshade_view;
 		self.width = width;
 		self.height = height;
 
 		true
 	}
 
-	fn make_atlas(device: &Device, width: u32, height: u32) -> (Texture, TextureView, Texture, TextureView) {
+	fn make_atlas(device: &Device, width: u32, height: u32) -> (Texture, TextureView) {
 		let descriptor = TextureDescriptor {
 			label: Some("Heightmap Atlas"),
 			size: Extent3d {
@@ -412,17 +381,7 @@ impl Atlas {
 			..Default::default()
 		});
 
-		let hillshade = device.create_texture(&TextureDescriptor {
-			label: Some("Hillshade"),
-			format: TextureFormat::R8Unorm,
-			..descriptor
-		});
-		let hillshade_view = hillshade.create_view(&TextureViewDescriptor {
-			label: Some("Hillshade View"),
-			..Default::default()
-		});
-
-		(atlas, view, hillshade, hillshade_view)
+		(atlas, view)
 	}
 
 	fn unloaded(&self) -> TileOffset { TileOffset { x: 0, y: self.height } }

@@ -13,20 +13,10 @@ struct Uniform {
     altitude: f32;
 };
 
-struct TileStatus {
-    values: array<u32>;
-};
-
 [[group(0), binding(0)]]
 var<uniform> uniforms: Uniform;
 [[group(0), binding(1)]]
-var tile_map: texture_2d<u32>;
-[[group(0), binding(2)]]
-var<storage, read_write> tile_status: TileStatus;
-[[group(0), binding(3)]]
-var tile_atlas: texture_2d<u32>;
-[[group(0), binding(4)]]
-var hillshade_atlas: texture_2d<f32>;
+var heightmap: texture_2d<u32>;
 
 var<private> l500: vec3<f32> = vec3<f32>(0.17, 0.31, 0.16);
 var<private> l1000: vec3<f32> = vec3<f32>(0.22, 0.36, 0.19);
@@ -52,34 +42,8 @@ var<private> water: vec3<f32> = vec3<f32>(0.01,0.09,0.31);
 var<private> taws_yellow: vec3<f32> = vec3<f32>(0.99, 0.93, 0.09);
 var<private> taws_red: vec3<f32> = vec3<f32>(0.93, 0.12, 0.14);
 
-fn degrees(radians: f32) -> f32 {
-    return radians * 57.295779513082322865;
-}
-
 fn radians(degrees: f32) -> f32 {
     return degrees * 0.0174533;
-}
-
-fn project(uv: vec2<f32>) -> LatLon {
-    let aspect_ratio = f32(uniforms.output_resolution_x) / f32(uniforms.output_resolution_y);
-    let headsin = sin(uniforms.heading);
-    let headcos = cos(uniforms.heading);
-    let offset_uv = vec2<f32>(uv.x - 0.5, uv.y - 0.5);
-    let scaled_uv = vec2<f32>(offset_uv.x * aspect_ratio, offset_uv.y);
-    let rotated_uv = vec2<f32>(scaled_uv.x * headcos - scaled_uv.y * headsin, scaled_uv.x * headsin + scaled_uv.y * headcos);
-    let uv = vec2<f32>(rotated_uv.x + 0.5, rotated_uv.y + 0.5);
-    let xy = (uv - vec2<f32>(0.5, 0.5)) * uniforms.vertical_diameter;
-
-    let latsin = sin(uniforms.map_center.lat);
-    let latcos = cos(uniforms.map_center.lat);
-    let c = sqrt(xy.x * xy.x + xy.y * xy.y);
-    let csin = sin(c);
-    let ccos = cos(c);
-
-    let lat = asin(ccos * latsin + xy.y * csin * latcos / c);
-    let lon = uniforms.map_center.lon + atan2(xy.x * csin, c * latcos * ccos - xy.y * latsin * csin);
-
-    return LatLon(lat, lon);
 }
 
 fn map_height(height: u32) -> vec3<f32> {
@@ -130,42 +94,13 @@ fn map_height(height: u32) -> vec3<f32> {
     }
 }
 
-struct SampleResult {
-    height: u32;
-    hillshade: f32;
-};
-
-fn sample_globe(lat: f32, lon: f32) -> SampleResult {
-    let tile_loc = vec2<u32>(u32(lon), u32(lat));
-    let index = tile_loc.y * 360u + tile_loc.x;
-    tile_status.values[index] = 1u;
-    let tile_offset = vec2<i32>(textureLoad(tile_map, vec2<i32>(tile_loc), 0)).xy;
-
-    let atlas_dimensions = textureDimensions(tile_atlas, 0);
-    let not_found = tile_offset.x == i32(atlas_dimensions.x);
-    let unloaded = tile_offset.y == i32(atlas_dimensions.y);
-
-    if (not_found) {
-        return SampleResult(1u << 15u, 1.0);
-    } else if (unloaded) {
-        return SampleResult(1u << 15u, 0.0);
-    } else {
-        let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
-        let pixel = vec2<f32>(tile_offset) + tile_uv * f32(uniforms.tile_size);
-
-        let height = textureLoad(tile_atlas, vec2<i32>(pixel), 0).x;
-        let hillshade = textureLoad(hillshade_atlas, vec2<i32>(pixel), 0).x;
-        return SampleResult(height, mix(0.4, 1.0, hillshade));
-    }
-}
-
 fn calculate_hillshade(height: f32) -> f32 {
     let m_per_pixel = (uniforms.vertical_diameter / f32(uniforms.output_resolution_y)) * 6371000.0;
     let zenith = radians(45.0);
     let azimuth = radians(135.0);
 
-    let dzdx = dpdx(height) * m_per_pixel;
-    let dzdy = dpdy(height) * m_per_pixel;
+    let dzdx = dpdx(height); // * m_per_pixel;
+    let dzdy = dpdy(height); // * m_per_pixel;
     let slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
 
     let aspect = atan2(dzdy, -dzdx);
@@ -175,52 +110,17 @@ fn calculate_hillshade(height: f32) -> f32 {
 
 [[stage(fragment)]]
 fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
-    let rad_position = project(uv);
-    let lat = degrees(rad_position.lat) + 90.0;
-    var lon = (degrees(rad_position.lon) + 180.0) % 360.0;
-    if (lon < 0.0) {
-        lon = lon + 360.0;
-    }
+    let uv = vec2<f32>(uv.x, 1.0 - uv.y);
+    let pixel = vec2<i32>(uv * vec2<f32>(f32(uniforms.output_resolution_x), f32(uniforms.output_resolution_y)));
 
-    let tile_uv = vec2<f32>(lon - floor(lon), 1.0 - (lat - floor(lat)));
-    let pixel = tile_uv * f32(uniforms.tile_size);
-    let pixel_offset = pixel - floor(pixel);
-
-    let delta = 1.0 / f32(uniforms.tile_size);
-    let x = sample_globe(lat, lon);
-    let y = sample_globe(lat, lon + delta);
-    let z = sample_globe(lat - delta, lon);
-    let w = sample_globe(lat - delta, lon + delta);
-
-    let xh = f32(~(1u << 15u) & x.height);
-    let yh = f32(~(1u << 15u) & y.height);
-    let zh = f32(~(1u << 15u) & z.height);
-    let wh = f32(~(1u << 15u) & w.height);
-
-    let xl_lerp = mix(xh, yh, pixel_offset.x);
-    let xh_lerp = mix(zh, wh, pixel_offset.x);
-    let height = mix(xl_lerp, xh_lerp, pixel_offset.y);
-
-    let xw = f32((x.height >> 15u) & 1u);
-    let yw = f32((y.height >> 15u) & 1u);
-    let zw = f32((z.height >> 15u) & 1u);
-    let ww = f32((w.height >> 15u) & 1u);
-
-    let xl_lerp = mix(xw, yw, pixel_offset.x);
-    let xh_lerp = mix(zw, ww, pixel_offset.x);
-    let is_water = mix(xl_lerp, xh_lerp, pixel_offset.y);
-
-    let xl_lerp = mix(x.hillshade, y.hillshade, pixel_offset.x);
-    let xh_lerp = mix(z.hillshade, w.hillshade, pixel_offset.x);
-    let hillshade = mix(xl_lerp, xh_lerp, pixel_offset.y);
-
-    let hillshade = calculate_hillshade(height);
+    let height = textureLoad(heightmap, pixel, 0).x;
+    let is_water = (height >> 15u) & 1u;
 
     var ret: vec3<f32>;
-    if (is_water > 0.5) {
+    if (is_water == 1u) {
         ret = water;
     } else {
-        ret = map_height(u32(height)) * hillshade;
+        ret = map_height(height) * mix(0.4, 1.0, calculate_hillshade(f32(height)));
     }
     return vec4<f32>(pow(ret, vec3<f32>(2.2)), 1.0);
 }
