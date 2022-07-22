@@ -6,7 +6,8 @@ struct LatLon {
 struct Uniform {
     map_center: LatLon;
     [[align(16)]] vertical_diameter: f32;
-    aspect_ratio: f32;
+    output_resolution_x: u32;
+    output_resolution_y: u32;
     tile_size: u32;
     heading: f32;
     altitude: f32;
@@ -55,11 +56,16 @@ fn degrees(radians: f32) -> f32 {
     return radians * 57.295779513082322865;
 }
 
+fn radians(degrees: f32) -> f32 {
+    return degrees * 0.0174533;
+}
+
 fn project(uv: vec2<f32>) -> LatLon {
+    let aspect_ratio = f32(uniforms.output_resolution_x) / f32(uniforms.output_resolution_y);
     let headsin = sin(uniforms.heading);
     let headcos = cos(uniforms.heading);
     let offset_uv = vec2<f32>(uv.x - 0.5, uv.y - 0.5);
-    let scaled_uv = vec2<f32>(offset_uv.x * uniforms.aspect_ratio, offset_uv.y);
+    let scaled_uv = vec2<f32>(offset_uv.x * aspect_ratio, offset_uv.y);
     let rotated_uv = vec2<f32>(scaled_uv.x * headcos - scaled_uv.y * headsin, scaled_uv.x * headsin + scaled_uv.y * headcos);
     let uv = vec2<f32>(rotated_uv.x + 0.5, rotated_uv.y + 0.5);
     let xy = (uv - vec2<f32>(0.5, 0.5)) * uniforms.vertical_diameter;
@@ -77,15 +83,15 @@ fn project(uv: vec2<f32>) -> LatLon {
 }
 
 fn map_height(height: u32) -> vec3<f32> {
-    let feet = i32(f32(i32(height) - 500) * 3.28084);
-    if (feet - 2000 > i32(uniforms.altitude)) {
+    let feet = f32(i32(height) - 500) * 3.28084;
+    if (feet > uniforms.altitude + 2000.0) {
         return taws_red;
-    } else if (feet > i32(uniforms.altitude - 500.0)) {
+    } else if (feet > uniforms.altitude - 500.0) {
         return taws_yellow;
-    } else if (feet < 500) {
+    } else if (feet < 500.0) {
         return l500;
     } else {
-        switch (feet / 1000) {
+        switch (i32(feet / 1000.0)) {
             case 0: { return l1000; }
             case 1: { return l2000; }
             case 2: { return l3000; }
@@ -153,6 +159,20 @@ fn sample_globe(lat: f32, lon: f32) -> SampleResult {
     }
 }
 
+fn calculate_hillshade(height: f32) -> f32 {
+    let m_per_pixel = (uniforms.vertical_diameter / f32(uniforms.output_resolution_y)) * 6371000.0;
+    let zenith = radians(45.0);
+    let azimuth = radians(135.0);
+
+    let dzdx = dpdx(height) * m_per_pixel;
+    let dzdy = dpdy(height) * m_per_pixel;
+    let slope = atan(sqrt(dzdx * dzdx + dzdy * dzdy));
+
+    let aspect = atan2(dzdy, -dzdx);
+
+    return clamp(cos(zenith) * cos(slope) + sin(zenith) * sin(slope) * cos(azimuth - aspect), 0.0, 1.0);
+}
+
 [[stage(fragment)]]
 fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
     let rad_position = project(uv);
@@ -179,7 +199,7 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
 
     let xl_lerp = mix(xh, yh, pixel_offset.x);
     let xh_lerp = mix(zh, wh, pixel_offset.x);
-    let height = u32(mix(xl_lerp, xh_lerp, pixel_offset.y));
+    let height = mix(xl_lerp, xh_lerp, pixel_offset.y);
 
     let xw = f32((x.height >> 15u) & 1u);
     let yw = f32((y.height >> 15u) & 1u);
@@ -194,11 +214,13 @@ fn main([[location(0)]] uv: vec2<f32>) -> [[location(0)]] vec4<f32> {
     let xh_lerp = mix(z.hillshade, w.hillshade, pixel_offset.x);
     let hillshade = mix(xl_lerp, xh_lerp, pixel_offset.y);
 
+    let hillshade = calculate_hillshade(height);
+
     var ret: vec3<f32>;
     if (is_water > 0.5) {
         ret = water;
     } else {
-        ret = map_height(height) * hillshade;
+        ret = map_height(u32(height)) * hillshade;
     }
     return vec4<f32>(pow(ret, vec3<f32>(2.2)), 1.0);
 }

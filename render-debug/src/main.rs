@@ -79,7 +79,7 @@ fn main() {
 	))
 	.unwrap();
 
-	let mut profiler = ProfileContext::with_enabled_and_name("GPU", &adapter, &device, &queue, 2, timestamp_query);
+	let mut profiler = ProfileContext::with_enabled(&adapter, &device, &queue, 2, timestamp_query);
 	let mut ui = Ui::new();
 
 	let size = window.inner_size();

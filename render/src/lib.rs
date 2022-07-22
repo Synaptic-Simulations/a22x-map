@@ -90,7 +90,7 @@ pub struct Renderer {
 }
 
 impl Renderer {
-	const CBUFFER_SIZE: u64 = 48;
+	const CBUFFER_SIZE: u64 = 128;
 
 	pub fn new(device: &Device, options: &RendererOptions) -> Result<Self, LoadError> {
 		let sets = std::fs::read_to_string(options.data_path.join("_meta"))?;
@@ -274,11 +274,11 @@ impl Renderer {
 		data[4..8].copy_from_slice(&options.position.lon.to_radians().to_le_bytes());
 
 		data[16..20].copy_from_slice(&options.vertical_angle.to_le_bytes());
-		let aspect_ratio = options.width as f32 / options.height as f32;
-		data[20..24].copy_from_slice(&aspect_ratio.to_le_bytes());
-		data[24..28].copy_from_slice(&cache.tile_size().to_le_bytes());
-		data[28..32].copy_from_slice(&(360. - options.heading).to_radians().to_le_bytes());
-		data[32..36].copy_from_slice(&options.altitude.to_le_bytes());
+		data[20..24].copy_from_slice(&options.width.to_le_bytes());
+		data[24..28].copy_from_slice(&options.height.to_le_bytes());
+		data[28..32].copy_from_slice(&cache.tile_size().to_le_bytes());
+		data[32..36].copy_from_slice(&(360. - options.heading).to_radians().to_le_bytes());
+		data[36..40].copy_from_slice(&options.altitude.to_le_bytes());
 
 		data
 	}
